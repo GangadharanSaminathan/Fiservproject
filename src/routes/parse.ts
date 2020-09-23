@@ -7,7 +7,7 @@ parseRouter.post('/api/v1/parse', (req, res) => {
     const reqData = req.body.data;
     // const pattern = reqData.match(/([A-Za-z]+0000)([A-Za-z]+000)([0-9]+)/);
     // const response = { firstName: pattern[1], lastName: pattern[2], clientId: pattern[3] };
-    const response = { firstName: reqData.substr(0,7), lastName: reqData.substr(8,10), clientId: reqData.substr(18)};
+    const response = { firstName: reqData.substr(0,8), lastName: reqData.substr(8,10), clientId: reqData.substr(18)};
     res.send({status: 200, data: response});
 });
 
