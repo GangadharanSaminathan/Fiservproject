@@ -12,5 +12,5 @@ POST: http://localhost:3000/api/v1/parse
 POST: http://localhost:3000/api/v2/parse
 
 
-Reqest body data :
+Request body data :
 JOHN0000MICHAEL0009994567
