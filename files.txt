@@ -1,0 +1,71 @@
+// src/utils/azureToken.ts
+import axios from 'axios';
+
+export async function getAzureAccessToken(tenantId: string, clientId: string, clientSecret: string, scope: string) {
+  const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+
+  const params = new URLSearchParams();
+  params.append('client_id', clientId);
+  params.append('client_secret', clientSecret);
+  params.append('scope', scope);
+  params.append('grant_type', 'client_credentials');
+
+  const response = await axios.post(url, params, {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  });
+
+  return response.data.access_token;
+}
+
+
+npm install express jwks-rsa jsonwebtoken
+
+
+// src/middleware/verifyToken.ts
+import jwt from 'jsonwebtoken';
+import jwksClient from 'jwks-rsa';
+import { Request, Response, NextFunction } from 'express';
+
+const tenantId = 'your-tenant-id';
+const issuer = `https://login.microsoftonline.com/${tenantId}/v2.0`;
+
+const client = jwksClient({
+  jwksUri: `${issuer}/discovery/v2.0/keys`,
+});
+
+function getKey(header: any, callback: any) {
+  client.getSigningKey(header.kid, function (err, key) {
+    const signingKey = key?.getPublicKey();
+    callback(null, signingKey);
+  });
+}
+
+export const verifyAzureToken = (req: Request, res: Response, next: NextFunction) => {
+  const token = req.headers.authorization?.split(' ')[1];
+
+  if (!token) return res.status(401).send('Access token missing');
+
+  jwt.verify(
+    token,
+    getKey,
+    {
+      audience: 'your-api-client-id', // or App ID URI
+      issuer,
+      algorithms: ['RS256'],
+    },
+    (err, decoded) => {
+      if (err) return res.status(403).send('Invalid token');
+      (req as any).user = decoded;
+      next();
+    }
+  );
+};
+
+import express from 'express';
+import { verifyAzureToken } from './middleware/verifyToken';
+
+const app = express();
+
+app.get('/secure-data', verifyAzureToken, (req, res) => {
+  res.json({ message: 'Secure data accessed', user: (req as any).user });
+});
