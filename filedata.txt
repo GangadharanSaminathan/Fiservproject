@@ -1,0 +1,930 @@
+# Azure Token Validation API - Complete Project Structure
+
+## Project Directory Structure
+```
+azure-token-api/
+├── src/
+│   ├── config/
+│   │   ├── index.ts
+│   │   └── azure.config.ts
+│   ├── middleware/
+│   │   ├── auth.middleware.ts
+│   │   ├── authorization.middleware.ts
+│   │   └── error.middleware.ts
+│   ├── services/
+│   │   ├── token.service.ts
+│   │   └── azure.service.ts
+│   ├── types/
+│   │   ├── auth.types.ts
+│   │   └── express.types.ts
+│   ├── routes/
+│   │   ├── index.ts
+│   │   ├── auth.routes.ts
+│   │   └── api.routes.ts
+│   ├── utils/
+│   │   ├── logger.ts
+│   │   └── validators.ts
+│   ├── controllers/
+│   │   ├── auth.controller.ts
+│   │   └── api.controller.ts
+│   └── app.ts
+├── tests/
+│   ├── auth.test.ts
+│   └── api.test.ts
+├── .env.example
+├── .gitignore
+├── package.json
+├── tsconfig.json
+├── jest.config.js
+└── README.md
+```
+
+## 1. package.json
+```json
+{
+  "name": "azure-token-validation-api",
+  "version": "1.0.0",
+  "description": "Node.js API with Azure AD token validation",
+  "main": "dist/app.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/app.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/app.ts",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "jwks-rsa": "^3.0.1",
+    "axios": "^1.5.0",
+    "dotenv": "^16.3.1",
+    "helmet": "^7.0.0",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^6.10.0",
+    "winston": "^3.10.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.17",
+    "@types/jsonwebtoken": "^9.0.2",
+    "@types/cors": "^2.8.13",
+    "@types/node": "^20.5.0",
+    "@types/jest": "^29.5.4",
+    "typescript": "^5.1.6",
+    "ts-node-dev": "^2.0.0",
+    "jest": "^29.6.2",
+    "ts-jest": "^29.1.1",
+    "@typescript-eslint/eslint-plugin": "^6.4.0",
+    "@typescript-eslint/parser": "^6.4.0",
+    "eslint": "^8.47.0"
+  }
+}
+```
+
+## 2. tsconfig.json
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "noImplicitThis": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "moduleResolution": "node",
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"],
+      "@/config/*": ["src/config/*"],
+      "@/middleware/*": ["src/middleware/*"],
+      "@/services/*": ["src/services/*"],
+      "@/types/*": ["src/types/*"],
+      "@/utils/*": ["src/utils/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "tests"]
+}
+```
+
+## 3. .env.example
+```env
+# Server Configuration
+NODE_ENV=development
+PORT=3000
+
+# Azure AD Configuration
+AZURE_TENANT_ID=your-tenant-id-here
+AZURE_CLIENT_ID=your-client-id-here
+AZURE_CLIENT_SECRET=your-client-secret-here
+AZURE_AUDIENCE=api://your-api-id-here
+AZURE_ISSUER=https://sts.windows.net/your-tenant-id-here/
+AZURE_JWKS_URI=https://login.microsoftonline.com/your-tenant-id-here/discovery/v2.0/keys
+
+# Security
+JWT_SECRET=your-jwt-secret-for-local-tokens
+CORS_ORIGIN=http://localhost:3000
+
+# Logging
+LOG_LEVEL=info
+LOG_FILE=logs/app.log
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=100
+```
+
+## 4. src/types/auth.types.ts
+```typescript
+export interface AzureTokenPayload {
+  oid: string;
+  email?: string;
+  upn?: string;
+  name: string;
+  roles?: string[];
+  scope?: string;
+  aud: string;
+  iss: string;
+  exp: number;
+  iat: number;
+  tid: string;
+  sub: string;
+}
+
+export interface UserContext {
+  oid: string;
+  email: string;
+  name: string;
+  roles: string[];
+  scope: string;
+  tenantId: string;
+}
+
+export interface AuthConfig {
+  tenantId: string;
+  clientId: string;
+  clientSecret?: string;
+  audience: string;
+  issuer: string;
+  jwksUri: string;
+}
+
+export interface TokenValidationResult {
+  valid: boolean;
+  user?: UserContext;
+  error?: string;
+}
+```
+
+## 5. src/types/express.types.ts
+```typescript
+import { Request } from 'express';
+import { UserContext } from './auth.types';
+
+export interface AuthenticatedRequest extends Request {
+  user?: UserContext;
+}
+
+export interface ApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  message?: string;
+  timestamp: string;
+}
+```
+
+## 6. src/config/azure.config.ts
+```typescript
+import { AuthConfig } from '../types/auth.types';
+
+export const azureConfig: AuthConfig = {
+  tenantId: process.env.AZURE_TENANT_ID!,
+  clientId: process.env.AZURE_CLIENT_ID!,
+  clientSecret: process.env.AZURE_CLIENT_SECRET,
+  audience: process.env.AZURE_AUDIENCE!,
+  issuer: process.env.AZURE_ISSUER!,
+  jwksUri: process.env.AZURE_JWKS_URI!,
+};
+
+// Validate required configuration
+const requiredConfig = ['tenantId', 'clientId', 'audience', 'issuer', 'jwksUri'];
+const missingConfig = requiredConfig.filter(key => !azureConfig[key as keyof AuthConfig]);
+
+if (missingConfig.length > 0) {
+  throw new Error(`Missing required Azure configuration: ${missingConfig.join(', ')}`);
+}
+```
+
+## 7. src/config/index.ts
+```typescript
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
+
+export const config = {
+  port: parseInt(process.env.PORT || '3000', 10),
+  nodeEnv: process.env.NODE_ENV || 'development',
+  corsOrigin: process.env.CORS_ORIGIN || '*',
+  jwtSecret: process.env.JWT_SECRET || 'default-secret',
+  
+  // Rate limiting
+  rateLimit: {
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10), // 15 minutes
+    maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
+  },
+  
+  // Logging
+  logging: {
+    level: process.env.LOG_LEVEL || 'info',
+    file: process.env.LOG_FILE || 'logs/app.log',
+  },
+  
+  // Development mode
+  isDevelopment: process.env.NODE_ENV === 'development',
+  isProduction: process.env.NODE_ENV === 'production',
+};
+
+export { azureConfig } from './azure.config';
+```
+
+## 8. src/utils/logger.ts
+```typescript
+import winston from 'winston';
+import { config } from '../config';
+
+const logger = winston.createLogger({
+  level: config.logging.level,
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    config.isDevelopment
+      ? winston.format.combine(
+          winston.format.colorize(),
+          winston.format.simple()
+        )
+      : winston.format.json()
+  ),
+  defaultMeta: { service: 'azure-token-api' },
+  transports: [
+    new winston.transports.Console(),
+    ...(config.isProduction
+      ? [new winston.transports.File({ filename: config.logging.file })]
+      : []),
+  ],
+});
+
+export default logger;
+```
+
+## 9. src/services/token.service.ts
+```typescript
+import jwt from 'jsonwebtoken';
+import jwksClient from 'jwks-rsa';
+import { azureConfig } from '../config';
+import { AzureTokenPayload, TokenValidationResult, UserContext } from '../types/auth.types';
+import logger from '../utils/logger';
+
+class TokenService {
+  private jwksClient: jwksClient.JwksClient;
+
+  constructor() {
+    this.jwksClient = jwksClient({
+      jwksUri: azureConfig.jwksUri,
+      requestHeaders: {},
+      timeout: 30000,
+      cache: true,
+      rateLimit: true,
+      jwksRequestsPerMinute: 5,
+      cacheMaxEntries: 5,
+      cacheMaxAge: 600000, // 10 minutes
+    });
+  }
+
+  private getSigningKey = (header: any): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      this.jwksClient.getSigningKey(header.kid, (err, key) => {
+        if (err) {
+          logger.error('Error getting signing key:', err);
+          return reject(err);
+        }
+        const signingKey = key?.getPublicKey();
+        if (!signingKey) {
+          return reject(new Error('No signing key found'));
+        }
+        resolve(signingKey);
+      });
+    });
+  };
+
+  public async validateToken(token: string): Promise<TokenValidationResult> {
+    try {
+      // Decode header to get kid
+      const decoded = jwt.decode(token, { complete: true });
+      if (!decoded || !decoded.header) {
+        return { valid: false, error: 'Invalid token format' };
+      }
+
+      // Get signing key
+      const signingKey = await this.getSigningKey(decoded.header);
+
+      // Verify token
+      const payload = jwt.verify(token, signingKey, {
+        audience: azureConfig.clientId,
+        issuer: azureConfig.issuer,
+        algorithms: ['RS256'],
+      }) as AzureTokenPayload;
+
+      // Additional validations
+      if (!this.validateTokenClaims(payload)) {
+        return { valid: false, error: 'Invalid token claims' };
+      }
+
+      const user = this.extractUserContext(payload);
+      return { valid: true, user };
+
+    } catch (error) {
+      logger.error('Token validation error:', error);
+      return { 
+        valid: false, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
+  }
+
+  private validateTokenClaims(payload: AzureTokenPayload): boolean {
+    const currentTime = Math.floor(Date.now() / 1000);
+    
+    // Check expiration
+    if (payload.exp < currentTime) {
+      logger.warn('Token expired');
+      return false;
+    }
+
+    // Check audience
+    if (payload.aud !== azureConfig.clientId) {
+      logger.warn('Invalid audience');
+      return false;
+    }
+
+    // Check issuer
+    if (payload.iss !== azureConfig.issuer) {
+      logger.warn('Invalid issuer');
+      return false;
+    }
+
+    // Check tenant
+    if (payload.tid !== azureConfig.tenantId) {
+      logger.warn('Invalid tenant');
+      return false;
+    }
+
+    return true;
+  }
+
+  private extractUserContext(payload: AzureTokenPayload): UserContext {
+    return {
+      oid: payload.oid,
+      email: payload.email || payload.upn || '',
+      name: payload.name,
+      roles: payload.roles || [],
+      scope: payload.scope || '',
+      tenantId: payload.tid,
+    };
+  }
+
+  public extractTokenFromHeader(authHeader: string | undefined): string | null {
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return null;
+    }
+    return authHeader.substring(7);
+  }
+}
+
+export default new TokenService();
+```
+
+## 10. src/middleware/auth.middleware.ts
+```typescript
+import { Response, NextFunction } from 'express';
+import { AuthenticatedRequest } from '../types/express.types';
+import tokenService from '../services/token.service';
+import logger from '../utils/logger';
+
+export const authenticateToken = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const token = tokenService.extractTokenFromHeader(req.headers.authorization);
+    
+    if (!token) {
+      res.status(401).json({
+        success: false,
+        error: 'No token provided',
+        message: 'Authorization header with Bearer token is required',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const validationResult = await tokenService.validateToken(token);
+    
+    if (!validationResult.valid || !validationResult.user) {
+      logger.warn('Token validation failed:', validationResult.error);
+      res.status(401).json({
+        success: false,
+        error: 'Invalid token',
+        message: validationResult.error,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    req.user = validationResult.user;
+    logger.info(`User authenticated: ${req.user.email}`);
+    next();
+
+  } catch (error) {
+    logger.error('Authentication middleware error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Authentication failed',
+      timestamp: new Date().toISOString(),
+    });
+  }
+};
+
+export const optionalAuth = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  const token = tokenService.extractTokenFromHeader(req.headers.authorization);
+  
+  if (token) {
+    const validationResult = await tokenService.validateToken(token);
+    if (validationResult.valid && validationResult.user) {
+      req.user = validationResult.user;
+    }
+  }
+  
+  next();
+};
+```
+
+## 11. src/middleware/authorization.middleware.ts
+```typescript
+import { Response, NextFunction } from 'express';
+import { AuthenticatedRequest } from '../types/express.types';
+import logger from '../utils/logger';
+
+export const requireRoles = (roles: string[]) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const userRoles = req.user.roles || [];
+    const hasRequiredRole = roles.some(role => userRoles.includes(role));
+
+    if (!hasRequiredRole) {
+      logger.warn(`Access denied for user ${req.user.email}. Required roles: ${roles.join(', ')}, User roles: ${userRoles.join(', ')}`);
+      res.status(403).json({
+        success: false,
+        error: 'Insufficient permissions',
+        message: `Required roles: ${roles.join(', ')}`,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    next();
+  };
+};
+
+export const requireScopes = (scopes: string[]) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const userScopes = req.user.scope?.split(' ') || [];
+    const hasRequiredScope = scopes.some(scope => userScopes.includes(scope));
+
+    if (!hasRequiredScope) {
+      logger.warn(`Access denied for user ${req.user.email}. Required scopes: ${scopes.join(', ')}, User scopes: ${userScopes.join(', ')}`);
+      res.status(403).json({
+        success: false,
+        error: 'Insufficient scope',
+        message: `Required scopes: ${scopes.join(', ')}`,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    next();
+  };
+};
+
+export const requireAnyRole = (roles: string[]) => requireRoles(roles);
+export const requireAllRoles = (roles: string[]) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const userRoles = req.user.roles || [];
+    const hasAllRoles = roles.every(role => userRoles.includes(role));
+
+    if (!hasAllRoles) {
+      res.status(403).json({
+        success: false,
+        error: 'Insufficient permissions',
+        message: `All required roles needed: ${roles.join(', ')}`,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    next();
+  };
+};
+```
+
+## 12. src/middleware/error.middleware.ts
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import logger from '../utils/logger';
+
+export const errorHandler = (
+  err: Error,
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void => {
+  logger.error('Unhandled error:', {
+    message: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method,
+    ip: req.ip,
+  });
+
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong',
+    timestamp: new Date().toISOString(),
+  });
+};
+
+export const notFoundHandler = (req: Request, res: Response): void => {
+  res.status(404).json({
+    success: false,
+    error: 'Not found',
+    message: `Route ${req.method} ${req.url} not found`,
+    timestamp: new Date().toISOString(),
+  });
+};
+```
+
+## 13. src/controllers/auth.controller.ts
+```typescript
+import { Response } from 'express';
+import { AuthenticatedRequest, ApiResponse } from '../types/express.types';
+
+export class AuthController {
+  public getProfile = (req: AuthenticatedRequest, res: Response): void => {
+    const response: ApiResponse = {
+      success: true,
+      data: {
+        user: req.user,
+      },
+      message: 'Profile retrieved successfully',
+      timestamp: new Date().toISOString(),
+    };
+
+    res.json(response);
+  };
+
+  public getTokenInfo = (req: AuthenticatedRequest, res: Response): void => {
+    const response: ApiResponse = {
+      success: true,
+      data: {
+        user: req.user,
+        scopes: req.user?.scope?.split(' ') || [],
+        roles: req.user?.roles || [],
+      },
+      message: 'Token information retrieved successfully',
+      timestamp: new Date().toISOString(),
+    };
+
+    res.json(response);
+  };
+}
+
+export default new AuthController();
+```
+
+## 14. src/controllers/api.controller.ts
+```typescript
+import { Response } from 'express';
+import { AuthenticatedRequest, ApiResponse } from '../types/express.types';
+
+export class ApiController {
+  public getPublicData = (req: AuthenticatedRequest, res: Response): void => {
+    const response: ApiResponse = {
+      success: true,
+      data: {
+        message: 'This is public data',
+        timestamp: new Date().toISOString(),
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    res.json(response);
+  };
+
+  public getProtectedData = (req: AuthenticatedRequest, res: Response): void => {
+    const response: ApiResponse = {
+      success: true,
+      data: {
+        message: 'This is protected data',
+        user: req.user?.name,
+        data: [
+          { id: 1, value: 'Protected item 1' },
+          { id: 2, value: 'Protected item 2' },
+        ],
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    res.json(response);
+  };
+
+  public getAdminData = (req: AuthenticatedRequest, res: Response): void => {
+    const response: ApiResponse = {
+      success: true,
+      data: {
+        message: 'This is admin-only data',
+        user: req.user,
+        adminData: {
+          totalUsers: 1500,
+          systemHealth: 'Good',
+          lastBackup: '2025-06-30T10:00:00Z',
+        },
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    res.json(response);
+  };
+
+  public createSensitiveData = (req: AuthenticatedRequest, res: Response): void => {
+    const response: ApiResponse = {
+      success: true,
+      data: {
+        message: 'Sensitive data created successfully',
+        createdBy: req.user?.name,
+        data: req.body,
+        id: Date.now(),
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    res.status(201).json(response);
+  };
+}
+
+export default new ApiController();
+```
+
+## 15. src/routes/auth.routes.ts
+```typescript
+import { Router } from 'express';
+import authController from '../controllers/auth.controller';
+import { authenticateToken } from '../middleware/auth.middleware';
+
+const router = Router();
+
+router.get('/profile', authenticateToken, authController.getProfile);
+router.get('/token-info', authenticateToken, authController.getTokenInfo);
+
+export default router;
+```
+
+## 16. src/routes/api.routes.ts
+```typescript
+import { Router } from 'express';
+import apiController from '../controllers/api.controller';
+import { authenticateToken } from '../middleware/auth.middleware';
+import { requireRoles, requireScopes } from '../middleware/authorization.middleware';
+
+const router = Router();
+
+// Public endpoint
+router.get('/public', apiController.getPublicData);
+
+// Protected endpoints
+router.get('/protected', authenticateToken, apiController.getProtectedData);
+
+// Role-based endpoints
+router.get('/admin', 
+  authenticateToken, 
+  requireRoles(['Admin', 'GlobalAdmin']), 
+  apiController.getAdminData
+);
+
+// Scope-based endpoints
+router.post('/sensitive', 
+  authenticateToken, 
+  requireScopes(['write:data', 'admin:create']),
+  apiController.createSensitiveData
+);
+
+// Combined authorization
+router.get('/super-admin',
+  authenticateToken,
+  requireRoles(['SuperAdmin']),
+  requireScopes(['admin:read', 'system:access']),
+  apiController.getAdminData
+);
+
+export default router;
+```
+
+## 17. src/routes/index.ts
+```typescript
+import { Router } from 'express';
+import authRoutes from './auth.routes';
+import apiRoutes from './api.routes';
+
+const router = Router();
+
+// Health check
+router.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Server is healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+  });
+});
+
+// API routes
+router.use('/auth', authRoutes);
+router.use('/api', apiRoutes);
+
+export default router;
+```
+
+## 18. src/app.ts
+```typescript
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import { config } from './config';
+import routes from './routes';
+import { errorHandler, notFoundHandler } from './middleware/error.middleware';
+import logger from './utils/logger';
+
+class App {
+  public app: express.Application;
+
+  constructor() {
+    this.app = express();
+    this.initializeMiddlewares();
+    this.initializeRoutes();
+    this.initializeErrorHandling();
+  }
+
+  private initializeMiddlewares(): void {
+    // Security middleware
+    this.app.use(helmet());
+    
+    // CORS
+    this.app.use(cors({
+      origin: config.corsOrigin,
+      credentials: true,
+    }));
+
+    // Rate limiting
+    const limiter = rateLimit({
+      windowMs: config.rateLimit.windowMs,
+      max: config.rateLimit.maxRequests,
+      message: {
+        success: false,
+        error: 'Too many requests',
+        message: 'Please try again later',
+        timestamp: new Date().toISOString(),
+      },
+    });
+    this.app.use(limiter);
+
+    // Body parsing
+    this.app.use(express.json({ limit: '10mb' }));
+    this.app.use(express.urlencoded({ extended: true }));
+
+    // Request logging
+    this.app.use((req, res, next) => {
+      logger.info(`${req.method} ${req.path}`, {
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+      });
+      next();
+    });
+  }
+
+  private initializeRoutes(): void {
+    this.app.use('/', routes);
+  }
+
+  private initializeErrorHandling(): void {
+    this.app.use(notFoundHandler);
+    this.app.use(errorHandler);
+  }
+
+  public listen(): void {
+    this.app.listen(config.port, () => {
+      logger.info(`Server running on port ${config.port}`);
+      logger.info(`Environment: ${config.nodeEnv}`);
+    });
+  }
+}
+
+const app = new App();
+app.listen();
+
+export default app;
+```
+
+## Setup Instructions
+
+1. **Install dependencies:**
+```bash
+npm install
+```
+
+2. **Set up environment variables:**
+```bash
+cp .env.example .env
+# Edit .env with your Azure AD configuration
+```
+
+3. **Build and run:**
+```bash
+# Development
+npm run dev
+
+# Production
+npm run build
+npm start
+```
+
+## API Endpoints
+
+- `GET /health` - Health check (public)
+- `GET /auth/profile` - Get user profile (authenticated)
+- `GET /auth/token-info` - Get token information (authenticated)
+- `GET /api/public` - Public data (no auth)
+- `GET /api/protected` - Protected data (authenticated)
+- `GET /api/admin` - Admin data (role-based)
+- `POST /api/sensitive` - Create sensitive data (scope-based)
+
+This structure provides a production-ready, scalable foundation for Azure AD token validation with proper separation of concerns, comprehensive error handling, and security best practices.
