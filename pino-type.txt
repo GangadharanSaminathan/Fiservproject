@@ -1,0 +1,920 @@
+// Project Structure:
+// express-typescript-logger/
+// ├── package.json
+// ├── tsconfig.json
+// ├── nodemon.json
+// ├── src/
+// │   ├── app.ts
+// │   ├── server.ts
+// │   ├── types/
+// │   │   ├── index.ts
+// │   │   ├── express.d.ts
+// │   │   └── logger.ts
+// │   ├── config/
+// │   │   ├── database.ts
+// │   │   └── logger.ts
+// │   ├── middleware/
+// │   │   ├── errorHandler.ts
+// │   │   ├── executionLogger.ts
+// │   │   └── requestLogger.ts
+// │   ├── routes/
+// │   │   ├── index.ts
+// │   │   ├── users.ts
+// │   │   └── health.ts
+// │   ├── services/
+// │   │   ├── userService.ts
+// │   │   └── performanceService.ts
+// │   ├── controllers/
+// │   │   ├── userController.ts
+// │   │   └── healthController.ts
+// │   ├── utils/
+// │   │   ├── constants.ts
+// │   │   └── asyncHandler.ts
+// │   └── validators/
+// │       └── userValidator.ts
+// ├── dist/
+// └── logs/
+
+// ============= package.json =============
+{
+  "name": "express-typescript-logger",
+  "version": "1.0.0",
+  "description": "Express.js with TypeScript, Pino logger and execution logging",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "nodemon",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "format": "prettier --write src/**/*.ts",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "pino": "^8.15.0",
+    "pino-pretty": "^10.2.0",
+    "pino-http": "^8.5.0",
+    "pino-multi-stream": "^5.2.0",
+    "cors": "^2.8.5",
+    "helmet": "^7.0.0",
+    "dotenv": "^16.3.1",
+    "joi": "^17.10.0",
+    "express-rate-limit": "^6.10.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.17",
+    "@types/node": "^20.5.0",
+    "@types/cors": "^2.8.13",
+    "@types/jest": "^29.5.4",
+    "typescript": "^5.2.2",
+    "nodemon": "^3.0.1",
+    "ts-node": "^10.9.1",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "@typescript-eslint/eslint-plugin": "^6.4.1",
+    "@typescript-eslint/parser": "^6.4.1",
+    "eslint": "^8.48.0",
+    "prettier": "^3.0.3",
+    "rimraf": "^5.0.1"
+  },
+  "keywords": [
+    "express",
+    "typescript",
+    "pino",
+    "logging",
+    "execution"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
+
+// ============= tsconfig.json =============
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "noImplicitThis": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["*"],
+      "@/types/*": ["types/*"],
+      "@/config/*": ["config/*"],
+      "@/middleware/*": ["middleware/*"],
+      "@/routes/*": ["routes/*"],
+      "@/services/*": ["services/*"],
+      "@/controllers/*": ["controllers/*"],
+      "@/utils/*": ["utils/*"],
+      "@/validators/*": ["validators/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}
+
+// ============= nodemon.json =============
+{
+  "watch": ["src"],
+  "ext": "ts",
+  "ignore": ["src/**/*.test.ts"],
+  "exec": "ts-node src/server.ts"
+}
+
+// ============= src/types/index.ts =============
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface CreateUserRequest {
+  name: string;
+  email: string;
+}
+
+export interface ApiResponse<T = any> {
+  status: 'success' | 'error';
+  message?: string;
+  data?: T;
+  requestId: string;
+  timestamp: string;
+}
+
+export interface ErrorResponse extends ApiResponse {
+  status: 'error';
+  errorId?: string;
+  path?: string;
+  stack?: string;
+}
+
+export interface OperationMetadata {
+  type?: string;
+  operation?: string;
+  userId?: string;
+  requestId?: string;
+  [key: string]: any;
+}
+
+export interface PerformanceMetrics {
+  totalRequests: number;
+  totalErrors: number;
+  averageResponseTime: number;
+  operationCounts: Record<string, number>;
+  activeOperations: number;
+  operationList: string[];
+  uptime: number;
+  memoryUsage: NodeJS.MemoryUsage;
+  timestamp: string;
+}
+
+export interface Operation {
+  id: string;
+  startTime: bigint;
+  metadata: OperationMetadata;
+  timestamp: string;
+}
+
+export interface OperationResult extends Operation {
+  duration: number;
+  status: 'success' | 'failed';
+  result?: string | null;
+  error?: string | null;
+  endTime: string;
+}
+
+// ============= src/types/express.d.ts =============
+import { Logger } from 'pino';
+
+declare global {
+  namespace Express {
+    interface Request {
+      requestId: string;
+      logger: Logger;
+      startTime: bigint;
+    }
+  }
+}
+
+// ============= src/types/logger.ts =============
+import { Logger } from 'pino';
+
+export interface LoggerConfig {
+  level: string;
+  name: string;
+  filename: string;
+}
+
+export interface LogContext {
+  requestId?: string;
+  userId?: string;
+  operation?: string;
+  filename?: string;
+  [key: string]: any;
+}
+
+export interface CreateLoggerFunction {
+  (module: string): Logger;
+}
+
+// ============= src/config/logger.ts =============
+import pino, { Logger } from 'pino';
+import pinoPretty from 'pino-pretty';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { CreateLoggerFunction } from '@/types/logger';
+
+// Create logs directory if it doesn't exist
+const logsDir = path.join(__dirname, '../../logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+}
+
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Configure Pino logger
+const logger: Logger = pino({
+  name: 'express-typescript-app',
+  level: process.env.LOG_LEVEL || 'info',
+  formatters: {
+    level: (label: string) => {
+      return { level: label };
+    }
+  },
+  serializers: {
+    err: pino.stdSerializers.err,
+    req: pino.stdSerializers.req,
+    res: pino.stdSerializers.res,
+  },
+  timestamp: pino.stdTimeFunctions.isoTime,
+  mixin: () => ({
+    filename: 'config/logger.ts',
+    pid: process.pid,
+    hostname: os.hostname()
+  })
+}, isProduction ? 
+  pino.multistream([
+    { stream: fs.createWriteStream(path.join(logsDir, 'app.log'), { flags: 'a' }) },
+    { stream: fs.createWriteStream(path.join(logsDir, 'error.log'), { flags: 'a' }), level: 'error' }
+  ]) : 
+  pinoPretty({ colorize: true, translateTime: 'SYS:standard' })
+);
+
+// Create child loggers for different modules
+const createLogger: CreateLoggerFunction = (module: string): Logger => {
+  return logger.child({ filename: module });
+};
+
+export { logger, createLogger };
+
+// ============= src/utils/constants.ts =============
+export const HTTP_STATUS = {
+  OK: 200,
+  CREATED: 201,
+  BAD_REQUEST: 400,
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  INTERNAL_SERVER_ERROR: 500
+} as const;
+
+export const MESSAGES = {
+  SUCCESS: 'Success',
+  ERROR: 'Error',
+  NOT_FOUND: 'Not Found',
+  INVALID_INPUT: 'Invalid Input',
+  USER_CREATED: 'User created successfully',
+  USER_NOT_FOUND: 'User not found'
+} as const;
+
+export const LOG_EVENTS = {
+  REQUEST_START: 'request_start',
+  REQUEST_COMPLETE: 'request_complete',
+  OPERATION_START: 'operation_start',
+  OPERATION_END: 'operation_end',
+  ERROR: 'error',
+  SERVER_START: 'server_start'
+} as const;
+
+// ============= src/utils/asyncHandler.ts =============
+import { Request, Response, NextFunction } from 'express';
+
+type AsyncFunction = (req: Request, res: Response, next: NextFunction) => Promise<any>;
+
+const asyncHandler = (fn: AsyncFunction) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+};
+
+export default asyncHandler;
+
+// ============= src/validators/userValidator.ts =============
+import Joi from 'joi';
+import { CreateUserRequest } from '@/types';
+
+export const createUserSchema = Joi.object<CreateUserRequest>({
+  name: Joi.string().min(2).max(50).required(),
+  email: Joi.string().email().required()
+});
+
+export const validateCreateUser = (data: any): { error?: Joi.ValidationError; value?: CreateUserRequest } => {
+  return createUserSchema.validate(data);
+};
+
+// ============= src/middleware/executionLogger.ts =============
+import { Request, Response, NextFunction } from 'express';
+import { createLogger } from '@/config/logger';
+import { LOG_EVENTS } from '@/utils/constants';
+
+const logger = createLogger('middleware/executionLogger.ts');
+
+export const executionLogger = (operationName: string) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const startHrTime = process.hrtime.bigint();
+    const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Add request ID and logger to request object
+    req.requestId = requestId;
+    req.logger = logger.child({ requestId, operation: operationName });
+    
+    // Log request start
+    req.logger.info({
+      event: LOG_EVENTS.REQUEST_START,
+      method: req.method,
+      url: req.originalUrl,
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      operation: operationName,
+      headers: req.headers
+    }, `Request started: ${operationName}`);
+    
+    // Store start time
+    req.startTime = startHrTime;
+    
+    // Override res.end to log completion
+    const originalEnd = res.end;
+    res.end = function(chunk?: any, encoding?: BufferEncoding): Response {
+      const endHrTime = process.hrtime.bigint();
+      const duration = Number(endHrTime - startHrTime) / 1000000; // Convert to milliseconds
+      
+      // Log request completion
+      req.logger.info({
+        event: LOG_EVENTS.REQUEST_COMPLETE,
+        method: req.method,
+        url: req.originalUrl,
+        statusCode: res.statusCode,
+        duration: `${duration.toFixed(2)}ms`,
+        operation: operationName,
+        responseSize: res.get('Content-Length') || 0
+      }, `Request completed: ${operationName} - ${res.statusCode} (${duration.toFixed(2)}ms)`);
+      
+      return originalEnd.call(this, chunk, encoding);
+    };
+    
+    next();
+  };
+};
+
+// ============= src/middleware/requestLogger.ts =============
+import pinoHttp from 'pino-http';
+import { createLogger } from '@/config/logger';
+
+const requestLogger = pinoHttp({
+  logger: createLogger('middleware/requestLogger.ts'),
+  serializers: {
+    req: (req) => ({
+      method: req.method,
+      url: req.url,
+      headers: req.headers,
+      remoteAddress: req.remoteAddress,
+      remotePort: req.remotePort,
+      raw: req.raw
+    }),
+    res: (res) => ({
+      statusCode: res.statusCode,
+      headers: res.headers,
+      responseTime: res.responseTime
+    })
+  },
+  customLogLevel: (req, res, err) => {
+    if (res.statusCode >= 400 && res.statusCode < 500) {
+      return 'warn';
+    } else if (res.statusCode >= 500 || err) {
+      return 'error';
+    }
+    return 'info';
+  },
+  customSuccessMessage: (req, res) => {
+    if (res.statusCode === 404) {
+      return 'Resource not found';
+    }
+    return 'Request completed';
+  }
+});
+
+export default requestLogger;
+
+// ============= src/middleware/errorHandler.ts =============
+import { Request, Response, NextFunction } from 'express';
+import { createLogger } from '@/config/logger';
+import { HTTP_STATUS } from '@/utils/constants';
+import { ErrorResponse } from '@/types';
+
+const logger = createLogger('middleware/errorHandler.ts');
+
+interface CustomError extends Error {
+  statusCode?: number;
+}
+
+export const errorHandler = (err: CustomError, req: Request, res: Response, next: NextFunction): void => {
+  const errorId = `error-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  // Log error with full context
+  logger.error({
+    errorId,
+    requestId: req.requestId,
+    error: {
+      message: err.message,
+      stack: err.stack,
+      statusCode: err.statusCode || 500,
+      name: err.name
+    },
+    request: {
+      method: req.method,
+      url: req.originalUrl,
+      headers: req.headers,
+      ip: req.ip,
+      userAgent: req.get('User-Agent')
+    }
+  }, `Unhandled error: ${err.message}`);
+  
+  // Determine status code
+  const statusCode = err.statusCode || HTTP_STATUS.INTERNAL_SERVER_ERROR;
+  
+  // Send error response
+  const errorResponse: ErrorResponse = {
+    status: 'error',
+    message: process.env.NODE_ENV === 'production' ? 
+      'Internal Server Error' : 
+      err.message,
+    errorId,
+    requestId: req.requestId,
+    timestamp: new Date().toISOString(),
+    path: req.originalUrl
+  };
+
+  if (process.env.NODE_ENV !== 'production') {
+    errorResponse.stack = err.stack;
+  }
+  
+  res.status(statusCode).json(errorResponse);
+};
+
+// ============= src/services/performanceService.ts =============
+import { createLogger } from '@/config/logger';
+import { Operation, OperationResult, OperationMetadata, PerformanceMetrics } from '@/types';
+import { LOG_EVENTS } from '@/utils/constants';
+
+const logger = createLogger('services/performanceService.ts');
+
+class PerformanceService {
+  private operations: Map<string, Operation> = new Map();
+  private metrics: Omit<PerformanceMetrics, 'activeOperations' | 'operationList' | 'uptime' | 'memoryUsage' | 'timestamp'> = {
+    totalRequests: 0,
+    totalErrors: 0,
+    averageResponseTime: 0,
+    operationCounts: {}
+  };
+  
+  public startOperation(operationId: string, metadata: OperationMetadata = {}): Operation {
+    const operation: Operation = {
+      id: operationId,
+      startTime: process.hrtime.bigint(),
+      metadata,
+      timestamp: new Date().toISOString()
+    };
+    
+    this.operations.set(operationId, operation);
+    this.metrics.totalRequests++;
+    
+    logger.info({
+      event: LOG_EVENTS.OPERATION_START,
+      operationId,
+      ...metadata
+    }, `Operation started: ${operationId}`);
+    
+    return operation;
+  }
+  
+  public endOperation(operationId: string, result: any = null, error: Error | null = null): OperationResult | null {
+    const operation = this.operations.get(operationId);
+    if (!operation) {
+      logger.warn({ operationId }, 'Operation not found');
+      return null;
+    }
+    
+    const endTime = process.hrtime.bigint();
+    const duration = Number(endTime - operation.startTime) / 1000000; // Convert to milliseconds
+    
+    const operationResult: OperationResult = {
+      ...operation,
+      duration,
+      status: error ? 'failed' : 'success',
+      result: result ? (typeof result === 'object' ? JSON.stringify(result) : result) : null,
+      error: error ? error.message : null,
+      endTime: new Date().toISOString()
+    };
+    
+    // Update metrics
+    if (error) {
+      this.metrics.totalErrors++;
+    }
+    
+    const operationType = operation.metadata.type || 'unknown';
+    this.metrics.operationCounts[operationType] = (this.metrics.operationCounts[operationType] || 0) + 1;
+    
+    logger.info({
+      event: LOG_EVENTS.OPERATION_END,
+      operationId,
+      duration: `${duration.toFixed(2)}ms`,
+      status: operationResult.status,
+      error: operationResult.error,
+      ...operation.metadata
+    }, `Operation completed: ${operationId} - ${operationResult.status} (${duration.toFixed(2)}ms)`);
+    
+    // Clean up
+    this.operations.delete(operationId);
+    
+    return operationResult;
+  }
+  
+  public getMetrics(): PerformanceMetrics {
+    return {
+      ...this.metrics,
+      activeOperations: this.operations.size,
+      operationList: Array.from(this.operations.keys()),
+      uptime: process.uptime(),
+      memoryUsage: process.memoryUsage(),
+      timestamp: new Date().toISOString()
+    };
+  }
+  
+  public getActiveOperations(): Operation[] {
+    return Array.from(this.operations.values());
+  }
+}
+
+export default new PerformanceService();
+
+// ============= src/services/userService.ts =============
+import { createLogger } from '@/config/logger';
+import { User, CreateUserRequest } from '@/types';
+import performanceService from './performanceService';
+
+const logger = createLogger('services/userService.ts');
+
+class UserService {
+  private users: Map<string, User> = new Map();
+  
+  constructor() {
+    // Add some sample users
+    this.users.set('1', { 
+      id: '1', 
+      name: 'John Doe', 
+      email: 'john@example.com',
+      createdAt: new Date().toISOString()
+    });
+    this.users.set('2', { 
+      id: '2', 
+      name: 'Jane Smith', 
+      email: 'jane@example.com',
+      createdAt: new Date().toISOString()
+    });
+  }
+  
+  public async findById(userId: string, requestId: string): Promise<User> {
+    const operationId = `find_user_${userId}_${requestId}`;
+    
+    performanceService.startOperation(operationId, {
+      type: 'database_query',
+      operation: 'findById',
+      userId,
+      requestId
+    });
+    
+    try {
+      logger.info({ userId, requestId }, 'Finding user by ID');
+      
+      // Simulate database delay
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 100));
+      
+      const user = this.users.get(userId);
+      
+      if (!user) {
+        const error = new Error('User not found');
+        (error as any).statusCode = 404;
+        performanceService.endOperation(operationId, null, error);
+        throw error;
+      }
+      
+      logger.info({ userId, userName: user.name, requestId }, 'User found successfully');
+      performanceService.endOperation(operationId, { userFound: true, userId });
+      
+      return user;
+    } catch (error) {
+      logger.error({ userId, requestId, error: (error as Error).message }, 'Error finding user');
+      performanceService.endOperation(operationId, null, error as Error);
+      throw error;
+    }
+  }
+  
+  public async create(userData: CreateUserRequest, requestId: string): Promise<User> {
+    const operationId = `create_user_${requestId}`;
+    
+    performanceService.startOperation(operationId, {
+      type: 'database_write',
+      operation: 'create',
+      requestId
+    });
+    
+    try {
+      logger.info({ userData, requestId }, 'Creating new user');
+      
+      // Simulate database delay
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 200));
+      
+      const user: User = {
+        id: Date.now().toString(),
+        ...userData,
+        createdAt: new Date().toISOString()
+      };
+      
+      this.users.set(user.id, user);
+      
+      logger.info({ userId: user.id, userName: user.name, requestId }, 'User created successfully');
+      performanceService.endOperation(operationId, { userCreated: true, userId: user.id });
+      
+      return user;
+    } catch (error) {
+      logger.error({ userData, requestId, error: (error as Error).message }, 'Error creating user');
+      performanceService.endOperation(operationId, null, error as Error);
+      throw error;
+    }
+  }
+  
+  public async getAll(requestId: string): Promise<User[]> {
+    const operationId = `get_all_users_${requestId}`;
+    
+    performanceService.startOperation(operationId, {
+      type: 'database_query',
+      operation: 'getAll',
+      requestId
+    });
+    
+    try {
+      logger.info({ requestId }, 'Getting all users');
+      
+      // Simulate database delay
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 50));
+      
+      const users = Array.from(this.users.values());
+      
+      logger.info({ userCount: users.length, requestId }, 'Users retrieved successfully');
+      performanceService.endOperation(operationId, { userCount: users.length });
+      
+      return users;
+    } catch (error) {
+      logger.error({ requestId, error: (error as Error).message }, 'Error getting users');
+      performanceService.endOperation(operationId, null, error as Error);
+      throw error;
+    }
+  }
+}
+
+export default new UserService();
+
+// ============= src/controllers/userController.ts =============
+import { Request, Response } from 'express';
+import userService from '@/services/userService';
+import { validateCreateUser } from '@/validators/userValidator';
+import { HTTP_STATUS, MESSAGES } from '@/utils/constants';
+import { ApiResponse, User } from '@/types';
+
+export class UserController {
+  public async getAllUsers(req: Request, res: Response): Promise<void> {
+    req.logger.info('Processing get all users request');
+    
+    const users = await userService.getAll(req.requestId);
+    
+    const response: ApiResponse<User[]> = {
+      status: 'success',
+      data: users,
+      requestId: req.requestId,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json(response);
+  }
+  
+  public async getUserById(req: Request, res: Response): Promise<void> {
+    const { id } = req.params;
+    
+    req.logger.info({ userId: id }, 'Processing get user by ID request');
+    
+    const user = await userService.findById(id, req.requestId);
+    
+    const response: ApiResponse<User> = {
+      status: 'success',
+      data: user,
+      requestId: req.requestId,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json(response);
+  }
+  
+  public async createUser(req: Request, res: Response): Promise<void> {
+    const { error, value } = validateCreateUser(req.body);
+    
+    if (error) {
+      req.logger.warn({ error: error.details }, 'Invalid user data provided');
+      
+      const response: ApiResponse = {
+        status: 'error',
+        message: error.details[0]?.message || MESSAGES.INVALID_INPUT,
+        requestId: req.requestId,
+        timestamp: new Date().toISOString()
+      };
+      
+      res.status(HTTP_STATUS.BAD_REQUEST).json(response);
+      return;
+    }
+    
+    req.logger.info({ userData: value }, 'Processing create user request');
+    
+    const user = await userService.create(value!, req.requestId);
+    
+    const response: ApiResponse<User> = {
+      status: 'success',
+      message: MESSAGES.USER_CREATED,
+      data: user,
+      requestId: req.requestId,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.status(HTTP_STATUS.CREATED).json(response);
+  }
+}
+
+export default new UserController();
+
+// ============= src/controllers/healthController.ts =============
+import { Request, Response } from 'express';
+import performanceService from '@/services/performanceService';
+import { ApiResponse, PerformanceMetrics } from '@/types';
+
+export class HealthController {
+  public async getHealth(req: Request, res: Response): Promise<void> {
+    req.logger.info('Processing health check request');
+    
+    const health = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      requestId: req.requestId
+    };
+    
+    res.json(health);
+  }
+  
+  public async getMetrics(req: Request, res: Response): Promise<void> {
+    req.logger.info('Processing metrics request');
+    
+    const metrics = performanceService.getMetrics();
+    
+    const response: ApiResponse<PerformanceMetrics> = {
+      status: 'success',
+      data: metrics,
+      requestId: req.requestId,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json(response);
+  }
+}
+
+export default new HealthController();
+
+// ============= src/routes/users.ts =============
+import { Router } from 'express';
+import userController from '@/controllers/userController';
+import { executionLogger } from '@/middleware/executionLogger';
+import asyncHandler from '@/utils/asyncHandler';
+
+const router = Router();
+
+// Get all users
+router.get('/', 
+  executionLogger('get_all_users'),
+  asyncHandler(userController.getAllUsers)
+);
+
+// Get user by ID
+router.get('/:id',
+  executionLogger('get_user_by_id'),
+  asyncHandler(userController.getUserById)
+);
+
+// Create new user
+router.post('/',
+  executionLogger('create_user'),
+  asyncHandler(userController.createUser)
+);
+
+export default router;
+
+// ============= src/routes/health.ts =============
+import { Router } from 'express';
+import healthController from '@/controllers/healthController';
+import { executionLogger } from '@/middleware/executionLogger';
+import asyncHandler from '@/utils/asyncHandler';
+
+const router = Router();
+
+// Health check endpoint
+router.get('/',
+  executionLogger('health_check'),
+  asyncHandler(healthController.getHealth)
+);
+
+// Metrics endpoint
+router.get('/metrics',
+  executionLogger('get_metrics'),
+  asyncHandler(healthController.getMetrics)
+);
+
+export default router;
+
+// ============= src/routes/index.ts =============
+import { Router, Request, Response } from 'express';
+import { executionLogger } from '@/middleware/executionLogger';
+import { ApiResponse } from '@/types';
+
+const router = Router();
+
+// Home route
+router.get('/',
+  executionLogger('home'),
+  (req: Request, res: Response) => {
+    req.logger.info('Processing home request');
+    
+    const response: ApiResponse = {
+      status: 'success',
+      message: 'Express.js with TypeScript and Pino Logger - Execute Log Demo',
+      data: {
+        version: '1.0.0',
+        endpoints: {
+          health: '/health',
+          metrics: '/health/metrics',
+          users: '/users',
+          createUser: 'POST /users',
+          getUser: '/users/:id'
+        }
+      },
+      requestId: req.requestId,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json(response);
+  }
+);
+
+export default router;
+
+// ============= src/app.ts =============
+import express, { Application, Request, Response } from 'express';
