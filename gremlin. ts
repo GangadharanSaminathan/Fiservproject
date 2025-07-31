@@ -1,0 +1,845 @@
+I'll help you create a sample Node.js TypeScript project that connects to Gremlin DB. This will include setting up the project structure, dependencies, and basic graph operations.
+
+{
+  "name": "gremlin-mimir-sample",
+  "version": "1.0.0",
+  "description": "Sample Node.js TypeScript project connecting to Gremlin DB with Mimir integration",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "clean": "rm -rf dist"
+  },
+  "keywords": ["gremlin", "graph-database", "typescript", "nodejs", "mimir"],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "gremlin": "^3.7.0",
+    "dotenv": "^16.3.1",
+    "winston": "^3.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.5.0",
+    "@typescript-eslint/eslint-plugin": "^6.4.0",
+    "@typescript-eslint/parser": "^6.4.0",
+    "eslint": "^8.47.0",
+    "jest": "^29.6.2",
+    "ts-jest": "^29.1.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.1.6"
+  }
+}
+
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "moduleResolution": "node",
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "allowSyntheticDefaultImports": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts"
+  ]
+}
+
+# Gremlin Database Configuration
+GREMLIN_ENDPOINT=ws://localhost:8182/gremlin
+GREMLIN_USERNAME=
+GREMLIN_PASSWORD=
+
+# For Azure Cosmos DB Gremlin API
+# GREMLIN_ENDPOINT=wss://your-cosmos-account.gremlin.cosmos.azure.com:443/
+# GREMLIN_USERNAME=/dbs/your-database/colls/your-collection
+# GREMLIN_PASSWORD=your-primary-key
+
+# For Amazon Neptune
+# GREMLIN_ENDPOINT=wss://your-neptune-cluster.cluster-xyz.region.neptune.amazonaws.com:8182/gremlin
+
+# Application Configuration
+NODE_ENV=development
+LOG_LEVEL=info
+PORT=3000
+
+# Mimir Configuration (if using Mimir for monitoring)
+MIMIR_ENDPOINT=http://localhost:9009
+MIMIR_API_KEY=
+
+import { DriverRemoteConnection, driver } from 'gremlin';
+import { logger } from '../utils/logger';
+
+export interface GremlinConfig {
+  endpoint: string;
+  username?: string;
+  password?: string;
+  enableSsl?: boolean;
+  connectTimeout?: number;
+  requestTimeout?: number;
+  maxConnectionPoolSize?: number;
+}
+
+export class GremlinConnection {
+  private connection: DriverRemoteConnection | null = null;
+  private g: any = null;
+  private config: GremlinConfig;
+
+  constructor(config: GremlinConfig) {
+    this.config = {
+      connectTimeout: 30000,
+      requestTimeout: 60000,
+      maxConnectionPoolSize: 10,
+      enableSsl: true,
+      ...config
+    };
+  }
+
+  async connect(): Promise<void> {
+    try {
+      const connectionOptions: any = {
+        connectTimeout: this.config.connectTimeout,
+        requestTimeout: this.config.requestTimeout,
+        maxConnectionPoolSize: this.config.maxConnectionPoolSize,
+      };
+
+      // Add authentication if provided
+      if (this.config.username && this.config.password) {
+        connectionOptions.authenticator = {
+          username: this.config.username,
+          password: this.config.password
+        };
+      }
+
+      // Configure SSL
+      if (this.config.enableSsl && this.config.endpoint.startsWith('wss://')) {
+        connectionOptions.ca = [];
+        connectionOptions.rejectUnauthorized = true;
+      }
+
+      this.connection = new DriverRemoteConnection(
+        this.config.endpoint,
+        connectionOptions
+      );
+
+      this.g = driver.traversal().withRemote(this.connection);
+      
+      // Test connection
+      await this.g.V().limit(1).next();
+      
+      logger.info('Successfully connected to Gremlin database', {
+        endpoint: this.config.endpoint.replace(/\/\/.*@/, '//***@') // Hide credentials in logs
+      });
+    } catch (error) {
+      logger.error('Failed to connect to Gremlin database', { error });
+      throw new Error(`Gremlin connection failed: ${error}`);
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    try {
+      if (this.connection) {
+        await this.connection.close();
+        this.connection = null;
+        this.g = null;
+        logger.info('Disconnected from Gremlin database');
+      }
+    } catch (error) {
+      logger.error('Error disconnecting from Gremlin database', { error });
+    }
+  }
+
+  getTraversal() {
+    if (!this.g) {
+      throw new Error('Not connected to Gremlin database. Call connect() first.');
+    }
+    return this.g;
+  }
+
+  async healthCheck(): Promise<boolean> {
+    try {
+      if (!this.g) {
+        return false;
+      }
+      await this.g.V().limit(1).next();
+      return true;
+    } catch (error) {
+      logger.warn('Gremlin health check failed', { error });
+      return false;
+    }
+  }
+}
+
+// Factory function to create connection from environment variables
+export function createGremlinConnection(): GremlinConnection {
+  const endpoint = process.env.GREMLIN_ENDPOINT;
+  if (!endpoint) {
+    throw new Error('GREMLIN_ENDPOINT environment variable is required');
+  }
+
+  const config: GremlinConfig = {
+    endpoint,
+    username: process.env.GREMLIN_USERNAME,
+    password: process.env.GREMLIN_PASSWORD,
+    enableSsl: endpoint.startsWith('wss://'),
+  };
+
+  return new GremlinConnection(config);
+}
+
+import winston from 'winston';
+
+const logFormat = winston.format.combine(
+  winston.format.timestamp(),
+  winston.format.errors({ stack: true }),
+  winston.format.json()
+);
+
+export const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: logFormat,
+  defaultMeta: { service: 'gremlin-mimir-sample' },
+  transports: [
+    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/combined.log' }),
+  ],
+});
+
+// Add console transport for development
+if (process.env.NODE_ENV !== 'production') {
+  logger.add(new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    )
+  }));
+}
+
+import { GremlinConnection } from '../config/gremlin';
+import { logger } from '../utils/logger';
+import { process as gProcess } from 'gremlin';
+
+export interface Vertex {
+  id: string;
+  label: string;
+  properties: Record<string, any>;
+}
+
+export interface Edge {
+  id: string;
+  label: string;
+  inV: string;
+  outV: string;
+  properties: Record<string, any>;
+}
+
+export class GraphService {
+  private gremlin: GremlinConnection;
+
+  constructor(gremlinConnection: GremlinConnection) {
+    this.gremlin = gremlinConnection;
+  }
+
+  async createVertex(label: string, properties: Record<string, any>): Promise<Vertex> {
+    try {
+      const g = this.gremlin.getTraversal();
+      
+      let query = g.addV(label);
+      
+      // Add properties
+      for (const [key, value] of Object.entries(properties)) {
+        query = query.property(key, value);
+      }
+
+      const result = await query.next();
+      const vertex = result.value;
+
+      logger.info('Created vertex', { label, id: vertex.id });
+      
+      return {
+        id: vertex.id,
+        label: vertex.label,
+        properties: this.extractProperties(vertex.properties)
+      };
+    } catch (error) {
+      logger.error('Failed to create vertex', { error, label, properties });
+      throw error;
+    }
+  }
+
+  async createEdge(
+    fromVertexId: string,
+    toVertexId: string,
+    label: string,
+    properties: Record<string, any> = {}
+  ): Promise<Edge> {
+    try {
+      const g = this.gremlin.getTraversal();
+      
+      let query = g.V(fromVertexId).addE(label).to(g.V(toVertexId));
+      
+      // Add properties
+      for (const [key, value] of Object.entries(properties)) {
+        query = query.property(key, value);
+      }
+
+      const result = await query.next();
+      const edge = result.value;
+
+      logger.info('Created edge', { label, from: fromVertexId, to: toVertexId });
+      
+      return {
+        id: edge.id,
+        label: edge.label,
+        inV: edge.inV,
+        outV: edge.outV,
+        properties: this.extractProperties(edge.properties)
+      };
+    } catch (error) {
+      logger.error('Failed to create edge', { error, label, fromVertexId, toVertexId });
+      throw error;
+    }
+  }
+
+  async findVerticesByLabel(label: string, limit: number = 100): Promise<Vertex[]> {
+    try {
+      const g = this.gremlin.getTraversal();
+      const results = await g.V().hasLabel(label).limit(limit).toList();
+      
+      return results.map(vertex => ({
+        id: vertex.id,
+        label: vertex.label,
+        properties: this.extractProperties(vertex.properties)
+      }));
+    } catch (error) {
+      logger.error('Failed to find vertices by label', { error, label });
+      throw error;
+    }
+  }
+
+  async findVertexById(id: string): Promise<Vertex | null> {
+    try {
+      const g = this.gremlin.getTraversal();
+      const result = await g.V(id).next();
+      
+      if (!result.value) {
+        return null;
+      }
+
+      const vertex = result.value;
+      return {
+        id: vertex.id,
+        label: vertex.label,
+        properties: this.extractProperties(vertex.properties)
+      };
+    } catch (error) {
+      logger.error('Failed to find vertex by ID', { error, id });
+      throw error;
+    }
+  }
+
+  async findNeighbors(vertexId: string, direction: 'in' | 'out' | 'both' = 'both'): Promise<Vertex[]> {
+    try {
+      const g = this.gremlin.getTraversal();
+      
+      let query;
+      switch (direction) {
+        case 'in':
+          query = g.V(vertexId).in_();
+          break;
+        case 'out':
+          query = g.V(vertexId).out();
+          break;
+        case 'both':
+        default:
+          query = g.V(vertexId).both();
+          break;
+      }
+
+      const results = await query.toList();
+      
+      return results.map(vertex => ({
+        id: vertex.id,
+        label: vertex.label,
+        properties: this.extractProperties(vertex.properties)
+      }));
+    } catch (error) {
+      logger.error('Failed to find neighbors', { error, vertexId, direction });
+      throw error;
+    }
+  }
+
+  async shortestPath(fromVertexId: string, toVertexId: string): Promise<any[]> {
+    try {
+      const g = this.gremlin.getTraversal();
+      const result = await g.V(fromVertexId)
+        .repeat(gProcess.statics.out().simplePath())
+        .until(gProcess.statics.hasId(toVertexId))
+        .path()
+        .next();
+
+      return result.value ? result.value.objects : [];
+    } catch (error) {
+      logger.error('Failed to find shortest path', { error, fromVertexId, toVertexId });
+      throw error;
+    }
+  }
+
+  async deleteVertex(id: string): Promise<boolean> {
+    try {
+      const g = this.gremlin.getTraversal();
+      await g.V(id).drop().next();
+      
+      logger.info('Deleted vertex', { id });
+      return true;
+    } catch (error) {
+      logger.error('Failed to delete vertex', { error, id });
+      return false;
+    }
+  }
+
+  async getGraphStats(): Promise<{ vertexCount: number; edgeCount: number }> {
+    try {
+      const g = this.gremlin.getTraversal();
+      
+      const vertexCountResult = await g.V().count().next();
+      const edgeCountResult = await g.E().count().next();
+      
+      return {
+        vertexCount: vertexCountResult.value,
+        edgeCount: edgeCountResult.value
+      };
+    } catch (error) {
+      logger.error('Failed to get graph stats', { error });
+      throw error;
+    }
+  }
+
+  private extractProperties(properties: any): Record<string, any> {
+    const extracted: Record<string, any> = {};
+    
+    if (properties) {
+      for (const [key, valueArray] of Object.entries(properties)) {
+        // Gremlin properties are returned as arrays with metadata
+        if (Array.isArray(valueArray) && valueArray.length > 0) {
+          extracted[key] = valueArray[0].value || valueArray[0];
+        }
+      }
+    }
+    
+    return extracted;
+  }
+}
+
+import { logger } from '../utils/logger';
+
+export interface MetricPoint {
+  timestamp: number;
+  value: number;
+}
+
+export interface Metric {
+  name: string;
+  labels: Record<string, string>;
+  points: MetricPoint[];
+}
+
+export class MimirClient {
+  private endpoint: string;
+  private apiKey?: string;
+  private metrics: Metric[] = [];
+  private flushInterval: NodeJS.Timeout | null = null;
+
+  constructor(endpoint?: string, apiKey?: string) {
+    this.endpoint = endpoint || process.env.MIMIR_ENDPOINT || 'http://localhost:9009';
+    this.apiKey = apiKey || process.env.MIMIR_API_KEY;
+    
+    // Auto-flush metrics every 30 seconds
+    this.startAutoFlush();
+  }
+
+  // Record a counter metric
+  recordCounter(name: string, value: number = 1, labels: Record<string, string> = {}): void {
+    this.addMetric(name, value, labels);
+  }
+
+  // Record a gauge metric
+  recordGauge(name: string, value: number, labels: Record<string, string> = {}): void {
+    this.addMetric(name, value, labels);
+  }
+
+  // Record a histogram metric (simplified - just recording the value)
+  recordHistogram(name: string, value: number, labels: Record<string, string> = {}): void {
+    this.addMetric(name, value, labels);
+  }
+
+  // Record timing metrics
+  recordTiming(name: string, durationMs: number, labels: Record<string, string> = {}): void {
+    this.addMetric(`${name}_duration_ms`, durationMs, labels);
+  }
+
+  // Record graph-specific metrics
+  recordGraphOperation(operation: string, success: boolean, durationMs: number): void {
+    const labels = {
+      operation,
+      status: success ? 'success' : 'error'
+    };
+    
+    this.recordCounter('gremlin_operations_total', 1, labels);
+    this.recordTiming('gremlin_operation', durationMs, labels);
+  }
+
+  recordGraphStats(vertexCount: number, edgeCount: number): void {
+    this.recordGauge('graph_vertices_total', vertexCount);
+    this.recordGauge('graph_edges_total', edgeCount);
+  }
+
+  private addMetric(name: string, value: number, labels: Record<string, string>): void {
+    const timestamp = Date.now();
+    
+    // Find existing metric with same name and labels
+    const existingMetric = this.metrics.find(m => 
+      m.name === name && 
+      JSON.stringify(m.labels) === JSON.stringify(labels)
+    );
+
+    if (existingMetric) {
+      existingMetric.points.push({ timestamp, value });
+    } else {
+      this.metrics.push({
+        name,
+        labels,
+        points: [{ timestamp, value }]
+      });
+    }
+  }
+
+  async flush(): Promise<void> {
+    if (this.metrics.length === 0) {
+      return;
+    }
+
+    try {
+      const payload = this.buildPrometheusPayload();
+      
+      const response = await fetch(`${this.endpoint}/api/v1/push`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-protobuf',
+          ...(this.apiKey && { 'X-Scope-OrgID': this.apiKey })
+        },
+        body: payload
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      logger.debug('Successfully pushed metrics to Mimir', { 
+        metricCount: this.metrics.length 
+      });
+      
+      // Clear metrics after successful push
+      this.metrics = [];
+    } catch (error) {
+      logger.error('Failed to push metrics to Mimir', { error });
+      // Keep metrics for retry on next flush
+    }
+  }
+
+  private buildPrometheusPayload(): string {
+    // Simplified Prometheus exposition format
+    let payload = '';
+    
+    for (const metric of this.metrics) {
+      const labelStr = Object.entries(metric.labels)
+        .map(([key, value]) => `${key}="${value}"`)
+        .join(',');
+      
+      const metricName = metric.name.replace(/[^a-zA-Z0-9_:]/g, '_');
+      
+      for (const point of metric.points) {
+        const labels = labelStr ? `{${labelStr}}` : '';
+        payload += `${metricName}${labels} ${point.value} ${point.timestamp}\n`;
+      }
+    }
+    
+    return payload;
+  }
+
+  private startAutoFlush(): void {
+    this.flushInterval = setInterval(() => {
+      this.flush().catch(error => {
+        logger.warn('Auto-flush failed', { error });
+      });
+    }, 30000); // 30 seconds
+  }
+
+  async close(): Promise<void> {
+    if (this.flushInterval) {
+      clearInterval(this.flushInterval);
+      this.flushInterval = null;
+    }
+    
+    // Final flush
+    await this.flush();
+  }
+
+  // Decorator for measuring method execution time
+  measureTime(metricName: string, labels: Record<string, string> = {}) {
+    return (target: any, propertyName: string, descriptor: PropertyDescriptor) => {
+      const method = descriptor.value;
+      
+      descriptor.value = async function (...args: any[]) {
+        const start = Date.now();
+        let success = true;
+        
+        try {
+          const result = await method.apply(this, args);
+          return result;
+        } catch (error) {
+          success = false;
+          throw error;
+        } finally {
+          const duration = Date.now() - start;
+          
+          // Assuming 'this' has access to MimirClient instance
+          if (this.mimirClient instanceof MimirClient) {
+            this.mimirClient.recordGraphOperation(metricName, success, duration);
+          }
+        }
+      };
+    };
+  }
+}
+
+import 'dotenv/config';
+import { createGremlinConnection } from './config/gremlin';
+import { GraphService } from './services/GraphService';
+import { MimirClient } from './monitoring/MimirClient';
+import { logger } from './utils/logger';
+
+class GremlinMimirSample {
+  private gremlin = createGremlinConnection();
+  private graphService = new GraphService(this.gremlin);
+  private mimirClient = new MimirClient();
+
+  async run(): Promise<void> {
+    try {
+      logger.info('Starting Gremlin-Mimir sample application');
+
+      // Connect to Gremlin database
+      await this.gremlin.connect();
+      
+      // Run sample operations
+      await this.runSampleOperations();
+      
+      // Get and record graph statistics
+      await this.recordGraphStats();
+      
+      logger.info('Sample application completed successfully');
+    } catch (error) {
+      logger.error('Application failed', { error });
+      throw error;
+    } finally {
+      await this.cleanup();
+    }
+  }
+
+  private async runSampleOperations(): Promise<void> {
+    logger.info('Running sample graph operations');
+
+    try {
+      // Create sample vertices
+      const alice = await this.measureOperation('create_vertex', () =>
+        this.graphService.createVertex('person', {
+          name: 'Alice',
+          age: 30,
+          city: 'New York'
+        })
+      );
+
+      const bob = await this.measureOperation('create_vertex', () =>
+        this.graphService.createVertex('person', {
+          name: 'Bob',
+          age: 25,
+          city: 'San Francisco'
+        })
+      );
+
+      const company = await this.measureOperation('create_vertex', () =>
+        this.graphService.createVertex('company', {
+          name: 'Tech Corp',
+          industry: 'Technology',
+          employees: 1000
+        })
+      );
+
+      // Create relationships
+      await this.measureOperation('create_edge', () =>
+        this.graphService.createEdge(alice.id, bob.id, 'knows', {
+          since: '2020-01-01',
+          relationship: 'colleague'
+        })
+      );
+
+      await this.measureOperation('create_edge', () =>
+        this.graphService.createEdge(alice.id, company.id, 'works_for', {
+          position: 'Software Engineer',
+          startDate: '2019-06-01'
+        })
+      );
+
+      await this.measureOperation('create_edge', () =>
+        this.graphService.createEdge(bob.id, company.id, 'works_for', {
+          position: 'Product Manager',
+          startDate: '2020-03-15'
+        })
+      );
+
+      // Query operations
+      const people = await this.measureOperation('find_vertices', () =>
+        this.graphService.findVerticesByLabel('person')
+      );
+      logger.info(`Found ${people.length} people in the graph`);
+
+      const aliceNeighbors = await this.measureOperation('find_neighbors', () =>
+        this.graphService.findNeighbors(alice.id)
+      );
+      logger.info(`Alice has ${aliceNeighbors.length} neighbors`);
+
+      // Try to find shortest path
+      try {
+        const path = await this.measureOperation('shortest_path', () =>
+          this.graphService.shortestPath(alice.id, company.id)
+        );
+        logger.info(`Shortest path from Alice to company has ${path.length} steps`);
+      } catch (error) {
+        logger.warn('Could not find shortest path', { error });
+      }
+
+      logger.info('Sample operations completed');
+    } catch (error) {
+      logger.error('Sample operations failed', { error });
+      throw error;
+    }
+  }
+
+  private async recordGraphStats(): Promise<void> {
+    try {
+      const stats = await this.graphService.getGraphStats();
+      this.mimirClient.recordGraphStats(stats.vertexCount, stats.edgeCount);
+      
+      logger.info('Graph statistics', stats);
+    } catch (error) {
+      logger.error('Failed to record graph stats', { error });
+    }
+  }
+
+  private async measureOperation<T>(operationName: string, operation: () => Promise<T>): Promise<T> {
+    const start = Date.now();
+    let success = true;
+    
+    try {
+      const result = await operation();
+      return result;
+    } catch (error) {
+      success = false;
+      throw error;
+    } finally {
+      const duration = Date.now() - start;
+      this.mimirClient.recordGraphOperation(operationName, success, duration);
+    }
+  }
+
+  private async cleanup(): Promise<void> {
+    try {
+      // Flush final metrics
+      await this.mimirClient.flush();
+      await this.mimirClient.close();
+      
+      // Disconnect from Gremlin
+      await this.gremlin.disconnect();
+      
+      logger.info('Cleanup completed');
+    } catch (error) {
+      logger.error('Cleanup failed', { error });
+    }
+  }
+}
+
+// Health check endpoint for monitoring
+export async function healthCheck(): Promise<{ status: string; gremlin: boolean; timestamp: string }> {
+  const gremlin = createGremlinConnection();
+  
+  try {
+    await gremlin.connect();
+    const isHealthy = await gremlin.healthCheck();
+    await gremlin.disconnect();
+    
+    return {
+      status: isHealthy ? 'healthy' : 'unhealthy',
+      gremlin: isHealthy,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    logger.error('Health check failed', { error });
+    return {
+      status: 'unhealthy',
+      gremlin: false,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+// Main execution
+if (require.main === module) {
+  const app = new GremlinMimirSample();
+  
+  process.on('SIGINT', async () => {
+    logger.info('Received SIGINT, shutting down gracefully');
+    await app['cleanup']();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', async () => {
+    logger.info('Received SIGTERM, shutting down gracefully');
+    await app['cleanup']();
+    process.exit(0);
+  });
+
+  app.run()
+    .then(() => {
+      logger.info('Application finished successfully');
+      process.exit(0);
+    })
+    .catch((error) => {
+      logger.error('Application failed', { error });
+      process.exit(1);
