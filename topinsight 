@@ -1,0 +1,710 @@
+// types/serviceMetrics.ts
+export interface ServiceMetric {
+  _id?: any;
+  servicename: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  timestamp: Date;
+  responseTime: number; // in milliseconds
+  statusCode: number;
+  errorMessage?: string;
+  requestCount: number;
+  cpuUsage?: number; // percentage
+  memoryUsage?: number; // percentage
+  endpoint?: string;
+  method?: string;
+  userId?: string;
+  traceId?: string;
+}
+
+export interface ServiceAggregation {
+  servicename: string;
+  rank: number;
+  rate: {
+    requestsPerSecond: number;
+    requestsPerMinute: number;
+    totalRequests: number;
+  };
+  error: {
+    errorRate: number; // percentage
+    errorCount: number;
+    totalRequests: number;
+    errorsByType: Array<{
+      statusCode: number;
+      count: number;
+      percentage: number;
+    }>;
+    errorsBySeverity: Array<{
+      severity: string;
+      count: number;
+      percentage: number;
+    }>;
+  };
+  duration: {
+    averageResponseTime: number;
+    medianResponseTime: number;
+    p95ResponseTime: number;
+    p99ResponseTime: number;
+    minResponseTime: number;
+    maxResponseTime: number;
+  };
+  saturation: {
+    averageCpuUsage: number;
+    averageMemoryUsage: number;
+    maxCpuUsage: number;
+    maxMemoryUsage: number;
+    resourceUtilization: 'low' | 'medium' | 'high' | 'critical';
+  };
+}
+
+export interface AggregationQuery {
+  timeRange?: '5minutes' | '10minutes' | '1hour' | '24hours' | '7days' | 'custom';
+  startDate?: string;
+  endDate?: string;
+  servicenames?: string[];
+  severities?: string[];
+  rankBy?: 'rate' | 'error' | 'duration' | 'saturation';
+  limit?: number;
+}
+
+// services/serviceMetricsService.ts
+import { MongoClient, Db, Collection } from 'mongodb';
+import { ServiceMetric, ServiceAggregation, AggregationQuery } from '../types/serviceMetrics';
+import { DateUtils } from '../utils/dateUtils';
+
+export class ServiceMetricsService {
+  private client: MongoClient;
+  private db: Db;
+
+  constructor(connectionString: string, dbName: string) {
+    this.client = new MongoClient(connectionString);
+    this.db = this.client.db(dbName);
+  }
+
+  async connect(): Promise<void> {
+    try {
+      await this.client.connect();
+      console.log('Connected to MongoDB for Service Metrics');
+    } catch (error) {
+      console.error('MongoDB connection error:', error);
+      throw error;
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    await this.client.close();
+  }
+
+  private buildDateFilter(query: AggregationQuery): any {
+    let dateFilter: any = {};
+    
+    if (query.timeRange && query.timeRange !== 'custom') {
+      const { startDate, endDate } = DateUtils.getDateRangeFromTimeOption(query.timeRange);
+      dateFilter.timestamp = {
+        $gte: startDate,
+        $lte: endDate
+      };
+    } else if (query.startDate && query.endDate) {
+      dateFilter.timestamp = {
+        $gte: new Date(query.startDate),
+        $lte: new Date(query.endDate)
+      };
+    }
+    
+    return dateFilter;
+  }
+
+  private buildServiceFilter(query: AggregationQuery): any {
+    let serviceFilter: any = {};
+    
+    if (query.servicenames && query.servicenames.length > 0) {
+      serviceFilter.servicename = { $in: query.servicenames };
+    }
+    
+    if (query.severities && query.severities.length > 0) {
+      serviceFilter.severity = { $in: query.severities };
+    }
+    
+    return serviceFilter;
+  }
+
+  private calculateResourceUtilization(cpuUsage: number, memoryUsage: number): 'low' | 'medium' | 'high' | 'critical' {
+    const maxUsage = Math.max(cpuUsage, memoryUsage);
+    
+    if (maxUsage >= 90) return 'critical';
+    if (maxUsage >= 70) return 'high';
+    if (maxUsage >= 50) return 'medium';
+    return 'low';
+  }
+
+  async aggregateServiceMetrics(query: AggregationQuery = {}): Promise<ServiceAggregation[]> {
+    const collection: Collection<ServiceMetric> = this.db.collection('service_metrics');
+    
+    const dateFilter = this.buildDateFilter(query);
+    const serviceFilter = this.buildServiceFilter(query);
+    const matchStage = { ...dateFilter, ...serviceFilter };
+    
+    // Get time range for rate calculations
+    const timeRangeMs = this.getTimeRangeInMs(query);
+    const timeRangeSeconds = timeRangeMs / 1000;
+    const timeRangeMinutes = timeRangeSeconds / 60;
+
+    const pipeline = [
+      { $match: matchStage },
+      {
+        $group: {
+          _id: '$servicename',
+          totalRequests: { $sum: '$requestCount' },
+          errorCount: {
+            $sum: {
+              $cond: [
+                { $gte: ['$statusCode', 400] },
+                '$requestCount',
+                0
+              ]
+            }
+          },
+          responseTimes: { $push: '$responseTime' },
+          cpuUsages: { $push: { $ifNull: ['$cpuUsage', 0] } },
+          memoryUsages: { $push: { $ifNull: ['$memoryUsage', 0] } },
+          errorsByStatusCode: {
+            $push: {
+              $cond: [
+                { $gte: ['$statusCode', 400] },
+                {
+                  statusCode: '$statusCode',
+                  count: '$requestCount'
+                },
+                null
+              ]
+            }
+          },
+          errorsBySeverity: {
+            $push: {
+              $cond: [
+                { $gte: ['$statusCode', 400] },
+                {
+                  severity: '$severity',
+                  count: '$requestCount'
+                },
+                null
+              ]
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          servicename: '$_id',
+          totalRequests: 1,
+          errorCount: 1,
+          errorRate: {
+            $multiply: [
+              { $divide: ['$errorCount', '$totalRequests'] },
+              100
+            ]
+          },
+          requestsPerSecond: {
+            $divide: ['$totalRequests', timeRangeSeconds || 1]
+          },
+          requestsPerMinute: {
+            $divide: ['$totalRequests', timeRangeMinutes || 1]
+          },
+          responseTimes: 1,
+          cpuUsages: 1,
+          memoryUsages: 1,
+          errorsByStatusCode: {
+            $filter: {
+              input: '$errorsByStatusCode',
+              cond: { $ne: ['$$this', null] }
+            }
+          },
+          errorsBySeverity: {
+            $filter: {
+              input: '$errorsBySeverity',
+              cond: { $ne: ['$$this', null] }
+            }
+          }
+        }
+      },
+      {
+        $addFields: {
+          averageResponseTime: { $avg: '$responseTimes' },
+          medianResponseTime: {
+            $arrayElemAt: [
+              {
+                $slice: [
+                  { $sortArray: { input: '$responseTimes', sortBy: 1 } },
+                  { $floor: { $divide: [{ $size: '$responseTimes' }, 2] } },
+                  1
+                ]
+              },
+              0
+            ]
+          },
+          minResponseTime: { $min: '$responseTimes' },
+          maxResponseTime: { $max: '$responseTimes' },
+          averageCpuUsage: { $avg: '$cpuUsages' },
+          averageMemoryUsage: { $avg: '$memoryUsages' },
+          maxCpuUsage: { $max: '$cpuUsages' },
+          maxMemoryUsage: { $max: '$memoryUsages' }
+        }
+      }
+    ];
+
+    const results = await collection.aggregate(pipeline).toArray();
+    
+    // Process results and calculate percentiles
+    const processedResults: ServiceAggregation[] = await Promise.all(
+      results.map(async (result, index) => {
+        const responseTimes = result.responseTimes.sort((a: number, b: number) => a - b);
+        const p95Index = Math.floor(responseTimes.length * 0.95);
+        const p99Index = Math.floor(responseTimes.length * 0.99);
+        
+        // Process error aggregations
+        const errorsByType = await this.processErrorsByStatusCode(result.errorsByStatusCode, result.errorCount);
+        const errorsBySeverity = await this.processErrorsBySeverity(result.errorsBySeverity, result.errorCount);
+        
+        return {
+          servicename: result.servicename,
+          rank: index + 1, // Will be recalculated based on ranking criteria
+          rate: {
+            requestsPerSecond: Math.round(result.requestsPerSecond * 100) / 100,
+            requestsPerMinute: Math.round(result.requestsPerMinute * 100) / 100,
+            totalRequests: result.totalRequests
+          },
+          error: {
+            errorRate: Math.round(result.errorRate * 100) / 100,
+            errorCount: result.errorCount,
+            totalRequests: result.totalRequests,
+            errorsByType,
+            errorsBySeverity
+          },
+          duration: {
+            averageResponseTime: Math.round(result.averageResponseTime * 100) / 100,
+            medianResponseTime: Math.round(result.medianResponseTime * 100) / 100,
+            p95ResponseTime: Math.round(responseTimes[p95Index] * 100) / 100,
+            p99ResponseTime: Math.round(responseTimes[p99Index] * 100) / 100,
+            minResponseTime: result.minResponseTime,
+            maxResponseTime: result.maxResponseTime
+          },
+          saturation: {
+            averageCpuUsage: Math.round(result.averageCpuUsage * 100) / 100,
+            averageMemoryUsage: Math.round(result.averageMemoryUsage * 100) / 100,
+            maxCpuUsage: result.maxCpuUsage,
+            maxMemoryUsage: result.maxMemoryUsage,
+            resourceUtilization: this.calculateResourceUtilization(
+              result.averageCpuUsage,
+              result.averageMemoryUsage
+            )
+          }
+        };
+      })
+    );
+
+    // Rank services based on the specified criteria
+    return this.rankServices(processedResults, query.rankBy || 'error', query.limit);
+  }
+
+  private async processErrorsByStatusCode(errors: any[], totalErrors: number): Promise<Array<{statusCode: number; count: number; percentage: number}>> {
+    const errorMap = new Map<number, number>();
+    
+    errors.forEach(error => {
+      if (error && error.statusCode) {
+        const current = errorMap.get(error.statusCode) || 0;
+        errorMap.set(error.statusCode, current + error.count);
+      }
+    });
+    
+    return Array.from(errorMap.entries())
+      .map(([statusCode, count]) => ({
+        statusCode,
+        count,
+        percentage: totalErrors > 0 ? Math.round((count / totalErrors) * 10000) / 100 : 0
+      }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  private async processErrorsBySeverity(errors: any[], totalErrors: number): Promise<Array<{severity: string; count: number; percentage: number}>> {
+    const severityMap = new Map<string, number>();
+    
+    errors.forEach(error => {
+      if (error && error.severity) {
+        const current = severityMap.get(error.severity) || 0;
+        severityMap.set(error.severity, current + error.count);
+      }
+    });
+    
+    return Array.from(severityMap.entries())
+      .map(([severity, count]) => ({
+        severity,
+        count,
+        percentage: totalErrors > 0 ? Math.round((count / totalErrors) * 10000) / 100 : 0
+      }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  private rankServices(services: ServiceAggregation[], rankBy: string, limit?: number): ServiceAggregation[] {
+    let sortedServices: ServiceAggregation[];
+    
+    switch (rankBy) {
+      case 'rate':
+        sortedServices = services.sort((a, b) => b.rate.requestsPerSecond - a.rate.requestsPerSecond);
+        break;
+      case 'error':
+        sortedServices = services.sort((a, b) => b.error.errorRate - a.error.errorRate);
+        break;
+      case 'duration':
+        sortedServices = services.sort((a, b) => b.duration.averageResponseTime - a.duration.averageResponseTime);
+        break;
+      case 'saturation':
+        sortedServices = services.sort((a, b) => {
+          const aMax = Math.max(a.saturation.averageCpuUsage, a.saturation.averageMemoryUsage);
+          const bMax = Math.max(b.saturation.averageCpuUsage, b.saturation.averageMemoryUsage);
+          return bMax - aMax;
+        });
+        break;
+      default:
+        sortedServices = services.sort((a, b) => b.error.errorRate - a.error.errorRate);
+    }
+    
+    // Update ranks
+    sortedServices.forEach((service, index) => {
+      service.rank = index + 1;
+    });
+    
+    return limit ? sortedServices.slice(0, limit) : sortedServices;
+  }
+
+  private getTimeRangeInMs(query: AggregationQuery): number {
+    if (query.timeRange && query.timeRange !== 'custom') {
+      const minutes = DateUtils.getTimeRangeInMinutes(query.timeRange);
+      return minutes * 60 * 1000;
+    } else if (query.startDate && query.endDate) {
+      return new Date(query.endDate).getTime() - new Date(query.startDate).getTime();
+    }
+    return 24 * 60 * 60 * 1000; // Default 24 hours
+  }
+
+  async createSampleMetrics(count: number = 10000): Promise<void> {
+    const collection = this.db.collection('service_metrics');
+    
+    const existingCount = await collection.countDocuments();
+    if (existingCount > 0) {
+      console.log(`Collection already has ${existingCount} metrics`);
+      return;
+    }
+
+    const services = ['auth-service', 'user-service', 'payment-service', 'notification-service', 'analytics-service', 'file-service'];
+    const severities = ['low', 'medium', 'high', 'critical'];
+    const statusCodes = [200, 201, 400, 401, 403, 404, 500, 502, 503];
+    const endpoints = ['/api/login', '/api/users', '/api/payments', '/api/notifications', '/api/analytics', '/api/files'];
+    const methods = ['GET', 'POST', 'PUT', 'DELETE'];
+
+    const sampleMetrics: ServiceMetric[] = Array.from({ length: count }, (_, i) => {
+      const servicename = services[i % services.length];
+      const severity = severities[i % severities.length];
+      const statusCode = statusCodes[i % statusCodes.length];
+      const isError = statusCode >= 400;
+      
+      return {
+        servicename,
+        severity: severity as any,
+        timestamp: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000), // Last 7 days
+        responseTime: Math.random() * 2000 + 10, // 10ms to 2s
+        statusCode,
+        errorMessage: isError ? `Error ${statusCode}: ${servicename} failed` : undefined,
+        requestCount: Math.floor(Math.random() * 10) + 1,
+        cpuUsage: Math.random() * 100,
+        memoryUsage: Math.random() * 100,
+        endpoint: endpoints[i % endpoints.length],
+        method: methods[i % methods.length],
+        userId: `user${(i % 1000) + 1}`,
+        traceId: `trace-${i + 1}-${Date.now()}`
+      };
+    });
+
+    // Insert in batches
+    const batchSize = 1000;
+    for (let i = 0; i < sampleMetrics.length; i += batchSize) {
+      const batch = sampleMetrics.slice(i, i + batchSize);
+      await collection.insertMany(batch);
+      console.log(`Inserted metrics batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(sampleMetrics.length / batchSize)}`);
+    }
+
+    console.log(`Created ${count} sample service metrics`);
+  }
+}
+
+// controllers/metricsController.ts
+import { Request, Response } from 'express';
+import { ServiceMetricsService } from '../services/serviceMetricsService';
+import { AggregationQuery } from '../types/serviceMetrics';
+
+export class MetricsController {
+  constructor(private metricsService: ServiceMetricsService) {}
+
+  async getServiceAggregation(req: Request, res: Response): Promise<void> {
+    try {
+      const query: AggregationQuery = {
+        timeRange: req.query.timeRange as any,
+        startDate: req.query.startDate as string,
+        endDate: req.query.endDate as string,
+        servicenames: req.query.servicenames ? 
+          (Array.isArray(req.query.servicenames) ? req.query.servicenames as string[] : [req.query.servicenames as string]) : 
+          undefined,
+        severities: req.query.severities ? 
+          (Array.isArray(req.query.severities) ? req.query.severities as string[] : [req.query.severities as string]) : 
+          undefined,
+        rankBy: req.query.rankBy as any,
+        limit: req.query.limit ? parseInt(req.query.limit as string) : undefined
+      };
+
+      const aggregation = await this.metricsService.aggregateServiceMetrics(query);
+
+      res.json({
+        success: true,
+        data: aggregation,
+        summary: {
+          totalServices: aggregation.length,
+          timeRange: query.timeRange || 'custom',
+          rankBy: query.rankBy || 'error',
+          generatedAt: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      console.error('Error in getServiceAggregation:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to aggregate service metrics',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async createSampleMetrics(req: Request, res: Response): Promise<void> {
+    try {
+      const count = req.body.count || 10000;
+      await this.metricsService.createSampleMetrics(count);
+      
+      res.json({
+        success: true,
+        message: `Created ${count} sample service metrics`
+      });
+    } catch (error) {
+      console.error('Error creating sample metrics:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to create sample metrics',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  async getServicesList(req: Request, res: Response): Promise<void> {
+    try {
+      const collection = this.metricsService['db'].collection('service_metrics');
+      const services = await collection.distinct('servicename');
+      const severities = await collection.distinct('severity');
+      
+      res.json({
+        success: true,
+        data: {
+          services,
+          severities,
+          rankingOptions: ['rate', 'error', 'duration', 'saturation'],
+          timeRangeOptions: ['5minutes', '10minutes', '1hour', '24hours', '7days', 'custom']
+        }
+      });
+    } catch (error) {
+      console.error('Error getting services list:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get services list',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+}
+
+// routes/metricsRoutes.ts
+import { Router } from 'express';
+import { MetricsController } from '../controllers/metricsController';
+import { ServiceMetricsService } from '../services/serviceMetricsService';
+
+export function createMetricsRoutes(metricsService: ServiceMetricsService): Router {
+  const router = Router();
+  const metricsController = new MetricsController(metricsService);
+
+  // Get service metrics aggregation
+  router.get('/metrics/services', metricsController.getServiceAggregation.bind(metricsController));
+  
+  // Create sample metrics data
+  router.post('/metrics/sample', metricsController.createSampleMetrics.bind(metricsController));
+  
+  // Get available services and configuration options
+  router.get('/metrics/config', metricsController.getServicesList.bind(metricsController));
+
+  return router;
+}
+
+// Example usage and sample responses
+
+// Sample API Request:
+// GET /api/metrics/services?timeRange=24hours&rankBy=error&limit=10&servicenames=auth-service,payment-service
+
+// Sample JSON Response:
+const sampleResponse = {
+  "success": true,
+  "data": [
+    {
+      "servicename": "payment-service",
+      "rank": 1,
+      "rate": {
+        "requestsPerSecond": 45.67,
+        "requestsPerMinute": 2740.2,
+        "totalRequests": 3955
+      },
+      "error": {
+        "errorRate": 12.34,
+        "errorCount": 488,
+        "totalRequests": 3955,
+        "errorsByType": [
+          {
+            "statusCode": 500,
+            "count": 245,
+            "percentage": 50.20
+          },
+          {
+            "statusCode": 404,
+            "count": 122,
+            "percentage": 25.00
+          },
+          {
+            "statusCode": 400,
+            "count": 121,
+            "percentage": 24.80
+          }
+        ],
+        "errorsBySeverity": [
+          {
+            "severity": "critical",
+            "count": 245,
+            "percentage": 50.20
+          },
+          {
+            "severity": "high",
+            "count": 143,
+            "percentage": 29.30
+          },
+          {
+            "severity": "medium",
+            "count": 100,
+            "percentage": 20.50
+          }
+        ]
+      },
+      "duration": {
+        "averageResponseTime": 156.78,
+        "medianResponseTime": 134.56,
+        "p95ResponseTime": 445.23,
+        "p99ResponseTime": 789.12,
+        "minResponseTime": 12.34,
+        "maxResponseTime": 1876.45
+      },
+      "saturation": {
+        "averageCpuUsage": 67.89,
+        "averageMemoryUsage": 72.34,
+        "maxCpuUsage": 95.67,
+        "maxMemoryUsage": 89.23,
+        "resourceUtilization": "high"
+      }
+    },
+    {
+      "servicename": "auth-service",
+      "rank": 2,
+      "rate": {
+        "requestsPerSecond": 123.45,
+        "requestsPerMinute": 7407.0,
+        "totalRequests": 10675
+      },
+      "error": {
+        "errorRate": 8.92,
+        "errorCount": 952,
+        "totalRequests": 10675,
+        "errorsByType": [
+          {
+            "statusCode": 401,
+            "count": 476,
+            "percentage": 50.00
+          },
+          {
+            "statusCode": 403,
+            "count": 286,
+            "percentage": 30.04
+          },
+          {
+            "statusCode": 500,
+            "count": 190,
+            "percentage": 19.96
+          }
+        ],
+        "errorsBySeverity": [
+          {
+            "severity": "high",
+            "count": 476,
+            "percentage": 50.00
+          },
+          {
+            "severity": "medium",
+            "count": 286,
+            "percentage": 30.04
+          },
+          {
+            "severity": "critical",
+            "count": 190,
+            "percentage": 19.96
+          }
+        ]
+      },
+      "duration": {
+        "averageResponseTime": 89.23,
+        "medianResponseTime": 76.54,
+        "p95ResponseTime": 234.67,
+        "p99ResponseTime": 456.78,
+        "minResponseTime": 8.91,
+        "maxResponseTime": 567.89
+      },
+      "saturation": {
+        "averageCpuUsage": 45.67,
+        "averageMemoryUsage": 52.34,
+        "maxCpuUsage": 78.90,
+        "maxMemoryUsage": 69.45,
+        "resourceUtilization": "medium"
+      }
+    }
+  ],
+  "summary": {
+    "totalServices": 2,
+    "timeRange": "24hours",
+    "rankBy": "error",
+    "generatedAt": "2024-01-31T10:30:00.000Z"
+  }
+};
+
+// Complete integration example in main server file:
+/*
+import { ServiceMetricsService } from './services/serviceMetricsService';
+import { createMetricsRoutes } from './routes/metricsRoutes';
+
+// Initialize metrics service
+const metricsService = new ServiceMetricsService(MONGODB_URI, 'metrics_db');
+
+// Add routes
+app.use('/api', createMetricsRoutes(metricsService));
+
+// Connect to metrics service
+async function startServer() {
+  await metricsService.connect();
+  // ... rest of server startup
+}
+*/
