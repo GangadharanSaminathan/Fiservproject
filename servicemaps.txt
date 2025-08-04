@@ -1,0 +1,829 @@
+// File: package.json
+{
+  "name": "grafana-scenes-servicemap-app",
+  "version": "1.0.0",
+  "description": "Grafana Scenes App with Service Map",
+  "main": "dist/module.js",
+  "scripts": {
+    "build": "grafana-toolkit plugin:build",
+    "dev": "grafana-toolkit plugin:dev",
+    "test": "grafana-toolkit plugin:test",
+    "sign": "grafana-toolkit plugin:sign",
+    "clean": "rimraf dist coverage"
+  },
+  "dependencies": {
+    "@grafana/data": "latest",
+    "@grafana/runtime": "latest",
+    "@grafana/scenes": "latest",
+    "@grafana/ui": "latest",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "cytoscape": "^3.23.0",
+    "cytoscape-dagre": "^2.4.0",
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "@grafana/toolkit": "latest",
+    "@types/react": "^18.0.0",
+    "@types/cytoscape": "^3.19.0",
+    "typescript": "^4.9.0"
+  }
+}
+
+// File: src/plugin.json
+{
+  "type": "app",
+  "name": "Service Map Scenes App",
+  "id": "servicemap-scenes-app",
+  "info": {
+    "description": "Service map visualization using Grafana Scenes",
+    "author": {
+      "name": "Your Name"
+    },
+    "keywords": ["scenes", "servicemap", "observability"],
+    "version": "1.0.0",
+    "updated": "2025-01-01"
+  },
+  "includes": [
+    {
+      "type": "page",
+      "name": "Service Map",
+      "path": "/a/servicemap-scenes-app",
+      "role": "Viewer",
+      "addToNav": true
+    }
+  ],
+  "dependencies": {
+    "grafanaVersion": "9.0.0"
+  }
+}
+
+// File: src/module.ts
+import { AppPlugin } from '@grafana/data';
+import { AppConfig } from './types';
+import { ServiceMapApp } from './components/ServiceMapApp';
+
+export const plugin = new AppPlugin<AppConfig>().setRootPage(ServiceMapApp);
+
+// File: src/types.ts
+export interface AppConfig {
+  // Add any app-level configuration here
+}
+
+export interface ServiceNode {
+  id: string;
+  name: string;
+  type: 'service' | 'database' | 'external' | 'frontend';
+  status: 'healthy' | 'warning' | 'critical' | 'unknown';
+  metrics: {
+    requestRate: number;
+    errorRate: number;
+    latency: number;
+  };
+  position?: {
+    x: number;
+    y: number;
+  };
+}
+
+export interface ServiceEdge {
+  id: string;
+  source: string;
+  target: string;
+  metrics: {
+    requestRate: number;
+    errorRate: number;
+    latency: number;
+  };
+  status: 'healthy' | 'warning' | 'critical';
+}
+
+export interface ServiceMapData {
+  nodes: ServiceNode[];
+  edges: ServiceEdge[];
+  timestamp: number;
+}
+
+// File: src/components/ServiceMapApp.tsx
+import React from 'react';
+import { PluginPage } from '@grafana/runtime';
+import { ServiceMapScene } from './ServiceMapScene';
+
+export function ServiceMapApp() {
+  return (
+    <PluginPage>
+      <ServiceMapScene />
+    </PluginPage>
+  );
+}
+
+// File: src/components/ServiceMapScene.tsx
+import React, { useMemo } from 'react';
+import {
+  SceneApp,
+  SceneAppPage,
+  SceneFlexLayout,
+  SceneFlexItem,
+  EmbeddedScene,
+  SceneControlsSpacer,
+  SceneRefreshPicker,
+  SceneTimePicker,
+  VariableValueSelectors,
+} from '@grafana/scenes';
+import { ServiceMapVisualization } from './ServiceMapVisualization';
+import { ServiceMapDataProvider } from '../data/ServiceMapDataProvider';
+
+export function ServiceMapScene() {
+  const scene = useMemo(() => {
+    const dataProvider = new ServiceMapDataProvider();
+
+    return new SceneApp({
+      pages: [
+        new SceneAppPage({
+          title: 'Service Map',
+          url: '/servicemap',
+          getScene: () => {
+            return new EmbeddedScene({
+              controls: [
+                new VariableValueSelectors({}),
+                new SceneControlsSpacer(),
+                new SceneTimePicker({ isOnCanvas: true }),
+                new SceneRefreshPicker({
+                  intervals: ['5s', '10s', '30s', '1m', '5m', '15m'],
+                  isOnCanvas: true,
+                }),
+              ],
+              body: new SceneFlexLayout({
+                direction: 'column',
+                children: [
+                  new SceneFlexItem({
+                    minHeight: 600,
+                    body: new ServiceMapVisualization({
+                      dataProvider,
+                    }),
+                  }),
+                ],
+              }),
+            });
+          },
+        }),
+      ],
+    });
+  }, []);
+
+  return <scene.Component model={scene} />;
+}
+
+// File: src/components/ServiceMapVisualization.tsx
+import React, { useEffect, useRef, useState } from 'react';
+import { SceneComponentProps, SceneObjectBase, SceneObjectState } from '@grafana/scenes';
+import { ServiceMapData, ServiceNode, ServiceEdge } from '../types';
+import { ServiceMapDataProvider } from '../data/ServiceMapDataProvider';
+import cytoscape, { Core, NodeSingular, EdgeSingular } from 'cytoscape';
+import dagre from 'cytoscape-dagre';
+import { css } from '@emotion/css';
+import { GrafanaTheme2 } from '@grafana/data';
+import { useStyles2, useTheme2 } from '@grafana/ui';
+
+// Register the dagre layout extension
+cytoscape.use(dagre);
+
+interface ServiceMapVisualizationState extends SceneObjectState {
+  data?: ServiceMapData;
+  selectedNode?: string;
+  loading: boolean;
+}
+
+interface ServiceMapVisualizationProps {
+  dataProvider: ServiceMapDataProvider;
+}
+
+export class ServiceMapVisualization extends SceneObjectBase<ServiceMapVisualizationState> {
+  private dataProvider: ServiceMapDataProvider;
+
+  constructor(props: ServiceMapVisualizationProps) {
+    super({
+      loading: true,
+    });
+    this.dataProvider = props.dataProvider;
+  }
+
+  public static Component = ({ model }: SceneComponentProps<ServiceMapVisualization>) => {
+    const { data, loading, selectedNode } = model.useState();
+    const containerRef = useRef<HTMLDivElement>(null);
+    const cyRef = useRef<Core | null>(null);
+    const theme = useTheme2();
+    const styles = useStyles2(getStyles);
+
+    useEffect(() => {
+      // Load initial data
+      model.dataProvider.getData().then((serviceMapData) => {
+        model.setState({ data: serviceMapData, loading: false });
+      });
+
+      // Set up data refresh interval
+      const interval = setInterval(() => {
+        model.dataProvider.getData().then((serviceMapData) => {
+          model.setState({ data: serviceMapData });
+        });
+      }, 10000); // Refresh every 10 seconds
+
+      return () => clearInterval(interval);
+    }, [model]);
+
+    useEffect(() => {
+      if (!data || !containerRef.current || loading) {
+        return;
+      }
+
+      // Initialize Cytoscape
+      const cy = cytoscape({
+        container: containerRef.current,
+        elements: [
+          ...data.nodes.map((node: ServiceNode) => ({
+            data: {
+              id: node.id,
+              label: node.name,
+              type: node.type,
+              status: node.status,
+              ...node.metrics,
+            },
+            position: node.position,
+            classes: `node-${node.type} status-${node.status}`,
+          })),
+          ...data.edges.map((edge: ServiceEdge) => ({
+            data: {
+              id: edge.id,
+              source: edge.source,
+              target: edge.target,
+              status: edge.status,
+              ...edge.metrics,
+            },
+            classes: `edge status-${edge.status}`,
+          })),
+        ],
+        style: getCytoscapeStyles(theme),
+        layout: {
+          name: 'dagre',
+          rankDir: 'TB',
+          spacingFactor: 1.5,
+          nodeSep: 50,
+          rankSep: 100,
+        },
+        wheelSensitivity: 0.2,
+        minZoom: 0.3,
+        maxZoom: 3,
+      });
+
+      // Event handlers
+      cy.on('tap', 'node', (evt) => {
+        const node = evt.target;
+        const nodeId = node.id();
+        model.setState({ selectedNode: nodeId });
+        
+        // Highlight connected edges
+        cy.elements().removeClass('highlighted');
+        node.addClass('highlighted');
+        node.connectedEdges().addClass('highlighted');
+      });
+
+      cy.on('tap', (evt) => {
+        if (evt.target === cy) {
+          model.setState({ selectedNode: undefined });
+          cy.elements().removeClass('highlighted');
+        }
+      });
+
+      cyRef.current = cy;
+
+      return () => {
+        if (cyRef.current) {
+          cyRef.current.destroy();
+        }
+      };
+    }, [data, loading, theme]);
+
+    if (loading) {
+      return <div className={styles.loading}>Loading service map...</div>;
+    }
+
+    return (
+      <div className={styles.container}>
+        <div className={styles.serviceMap} ref={containerRef} />
+        {selectedNode && data && (
+          <ServiceNodeDetails
+            node={data.nodes.find(n => n.id === selectedNode)}
+            onClose={() => model.setState({ selectedNode: undefined })}
+          />
+        )}
+      </div>
+    );
+  };
+}
+
+// File: src/components/ServiceNodeDetails.tsx
+import React from 'react';
+import { ServiceNode } from '../types';
+import { Modal, Button, Stat, StatGroup } from '@grafana/ui';
+import { getStatusColor } from '../utils/statusUtils';
+
+interface ServiceNodeDetailsProps {
+  node?: ServiceNode;
+  onClose: () => void;
+}
+
+export const ServiceNodeDetails: React.FC<ServiceNodeDetailsProps> = ({ node, onClose }) => {
+  if (!node) return null;
+
+  return (
+    <Modal title={`Service Details: ${node.name}`} isOpen={true} onDismiss={onClose}>
+      <div>
+        <p><strong>Type:</strong> {node.type}</p>
+        <p><strong>Status:</strong> 
+          <span style={{ color: getStatusColor(node.status), marginLeft: '8px' }}>
+            {node.status.toUpperCase()}
+          </span>
+        </p>
+        
+        <StatGroup>
+          <Stat
+            title="Request Rate"
+            value={node.metrics.requestRate}
+            unit="req/s"
+          />
+          <Stat
+            title="Error Rate"
+            value={node.metrics.errorRate}
+            unit="%"
+          />
+          <Stat
+            title="Latency"
+            value={node.metrics.latency}
+            unit="ms"
+          />
+        </StatGroup>
+
+        <Button onClick={onClose} style={{ marginTop: '16px' }}>
+          Close
+        </Button>
+      </div>
+    </Modal>
+  );
+};
+
+// File: src/data/ServiceMapDataProvider.ts
+import { ServiceMapData, ServiceNode, ServiceEdge } from '../types';
+
+export class ServiceMapDataProvider {
+  async getData(): Promise<ServiceMapData> {
+    // In a real implementation, this would fetch from your observability backend
+    // For demo purposes, returning mock data
+    return this.getMockData();
+  }
+
+  private getMockData(): ServiceMapData {
+    const nodes: ServiceNode[] = [
+      {
+        id: 'frontend',
+        name: 'Frontend App',
+        type: 'frontend',
+        status: 'healthy',
+        metrics: {
+          requestRate: 150.5,
+          errorRate: 0.2,
+          latency: 45,
+        },
+      },
+      {
+        id: 'api-gateway',
+        name: 'API Gateway',
+        type: 'service',
+        status: 'healthy',
+        metrics: {
+          requestRate: 148.2,
+          errorRate: 0.1,
+          latency: 12,
+        },
+      },
+      {
+        id: 'user-service',
+        name: 'User Service',
+        type: 'service',
+        status: 'warning',
+        metrics: {
+          requestRate: 45.8,
+          errorRate: 2.1,
+          latency: 89,
+        },
+      },
+      {
+        id: 'order-service',
+        name: 'Order Service',
+        type: 'service',
+        status: 'healthy',
+        metrics: {
+          requestRate: 67.3,
+          errorRate: 0.5,
+          latency: 34,
+        },
+      },
+      {
+        id: 'payment-service',
+        name: 'Payment Service',
+        type: 'service',
+        status: 'critical',
+        metrics: {
+          requestRate: 23.1,
+          errorRate: 8.7,
+          latency: 245,
+        },
+      },
+      {
+        id: 'database',
+        name: 'Main Database',
+        type: 'database',
+        status: 'healthy',
+        metrics: {
+          requestRate: 89.4,
+          errorRate: 0.0,
+          latency: 15,
+        },
+      },
+      {
+        id: 'external-api',
+        name: 'External Payment API',
+        type: 'external',
+        status: 'warning',
+        metrics: {
+          requestRate: 12.5,
+          errorRate: 3.2,
+          latency: 156,
+        },
+      },
+    ];
+
+    const edges: ServiceEdge[] = [
+      {
+        id: 'frontend-gateway',
+        source: 'frontend',
+        target: 'api-gateway',
+        status: 'healthy',
+        metrics: {
+          requestRate: 148.2,
+          errorRate: 0.1,
+          latency: 8,
+        },
+      },
+      {
+        id: 'gateway-user',
+        source: 'api-gateway',
+        target: 'user-service',
+        status: 'warning',
+        metrics: {
+          requestRate: 45.8,
+          errorRate: 2.1,
+          latency: 12,
+        },
+      },
+      {
+        id: 'gateway-order',
+        source: 'api-gateway',
+        target: 'order-service',
+        status: 'healthy',
+        metrics: {
+          requestRate: 67.3,
+          errorRate: 0.5,
+          latency: 9,
+        },
+      },
+      {
+        id: 'order-payment',
+        source: 'order-service',
+        target: 'payment-service',
+        status: 'critical',
+        metrics: {
+          requestRate: 23.1,
+          errorRate: 8.7,
+          latency: 25,
+        },
+      },
+      {
+        id: 'user-database',
+        source: 'user-service',
+        target: 'database',
+        status: 'healthy',
+        metrics: {
+          requestRate: 42.6,
+          errorRate: 0.0,
+          latency: 15,
+        },
+      },
+      {
+        id: 'order-database',
+        source: 'order-service',
+        target: 'database',
+        status: 'healthy',
+        metrics: {
+          requestRate: 46.8,
+          errorRate: 0.0,
+          latency: 14,
+        },
+      },
+      {
+        id: 'payment-external',
+        source: 'payment-service',
+        target: 'external-api',
+        status: 'warning',
+        metrics: {
+          requestRate: 12.5,
+          errorRate: 3.2,
+          latency: 134,
+        },
+      },
+    ];
+
+    return {
+      nodes,
+      edges,
+      timestamp: Date.now(),
+    };
+  }
+}
+
+// File: src/utils/statusUtils.ts
+export function getStatusColor(status: string): string {
+  switch (status) {
+    case 'healthy':
+      return '#52c41a';
+    case 'warning':
+      return '#faad14';
+    case 'critical':
+      return '#f5222d';
+    default:
+      return '#8c8c8c';
+  }
+}
+
+export function getStatusIcon(status: string): string {
+  switch (status) {
+    case 'healthy':
+      return '✓';
+    case 'warning':
+      return '!';
+    case 'critical':
+      return '✗';
+    default:
+      return '?';
+  }
+}
+
+// File: src/styles/serviceMapStyles.ts
+import { GrafanaTheme2 } from '@grafana/data';
+import { css } from '@emotion/css';
+
+export const getStyles = (theme: GrafanaTheme2) => ({
+  container: css`
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 600px;
+  `,
+  serviceMap: css`
+    width: 100%;
+    height: 100%;
+    background: ${theme.colors.background.primary};
+    border: 1px solid ${theme.colors.border.medium};
+    border-radius: ${theme.shape.borderRadius()};
+  `,
+  loading: css`
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 400px;
+    font-size: ${theme.typography.h4.fontSize};
+    color: ${theme.colors.text.secondary};
+  `,
+});
+
+export const getCytoscapeStyles = (theme: GrafanaTheme2) => [
+  {
+    selector: 'node',
+    style: {
+      'background-color': theme.colors.background.secondary,
+      'border-color': theme.colors.border.medium,
+      'border-width': 2,
+      'color': theme.colors.text.primary,
+      'label': 'data(label)',
+      'text-valign': 'center',
+      'text-halign': 'center',
+      'font-size': '12px',
+      'font-family': theme.typography.fontFamily,
+      'width': 80,
+      'height': 60,
+      'shape': 'roundrectangle',
+    },
+  },
+  {
+    selector: 'node.node-service',
+    style: {
+      'background-color': '#1f77b4',
+      'shape': 'roundrectangle',
+    },
+  },
+  {
+    selector: 'node.node-database',
+    style: {
+      'background-color': '#ff7f0e',
+      'shape': 'barrel',
+    },
+  },
+  {
+    selector: 'node.node-external',
+    style: {
+      'background-color': '#2ca02c',
+      'shape': 'hexagon',
+    },
+  },
+  {
+    selector: 'node.node-frontend',
+    style: {
+      'background-color': '#d62728',
+      'shape': 'triangle',
+    },
+  },
+  {
+    selector: 'node.status-healthy',
+    style: {
+      'border-color': '#52c41a',
+      'border-width': 3,
+    },
+  },
+  {
+    selector: 'node.status-warning',
+    style: {
+      'border-color': '#faad14',
+      'border-width': 3,
+    },
+  },
+  {
+    selector: 'node.status-critical',
+    style: {
+      'border-color': '#f5222d',
+      'border-width': 3,
+    },
+  },
+  {
+    selector: 'edge',
+    style: {
+      'width': 3,
+      'line-color': theme.colors.border.medium,
+      'target-arrow-color': theme.colors.border.medium,
+      'target-arrow-shape': 'triangle',
+      'curve-style': 'bezier',
+    },
+  },
+  {
+    selector: 'edge.status-healthy',
+    style: {
+      'line-color': '#52c41a',
+      'target-arrow-color': '#52c41a',
+    },
+  },
+  {
+    selector: 'edge.status-warning',
+    style: {
+      'line-color': '#faad14',
+      'target-arrow-color': '#faad14',
+    },
+  },
+  {
+    selector: 'edge.status-critical',
+    style: {
+      'line-color': '#f5222d',
+      'target-arrow-color': '#f5222d',
+    },
+  },
+  {
+    selector: '.highlighted',
+    style: {
+      'opacity': 1,
+      'z-index': 999,
+    },
+  },
+  {
+    selector: 'node:selected',
+    style: {
+      'border-width': 4,
+      'border-color': theme.colors.primary.main,
+    },
+  },
+];
+
+// File: tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2015",
+    "lib": ["DOM", "ES6", "ES2017"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "declaration": true,
+    "types": ["node", "jest"],
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["*"]
+    }
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}
+
+// File: .gitignore
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.env.local
+.vscode/
+*.tgz
+
+// File: README.md
+# Grafana Scenes Service Map App
+
+A Grafana app plugin built with Grafana Scenes that provides service map visualization with nodes and edges.
+
+## Features
+
+- Interactive service map visualization using Cytoscape.js
+- Real-time service health monitoring
+- Node details modal with metrics
+- Responsive layout with Grafana Scenes
+- Theme integration with Grafana UI
+
+## Installation
+
+1. Clone this repository
+2. Install dependencies: `npm install`
+3. Build the plugin: `npm run build`
+4. Copy the dist folder to your Grafana plugins directory
+5. Restart Grafana
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
+
+# Build for production
+npm run build
+
+# Run tests
+npm run test
+```
+
+## Folder Structure
+
+```
+src/
+├── components/           # React components
+│   ├── ServiceMapApp.tsx
+│   ├── ServiceMapScene.tsx
+│   ├── ServiceMapVisualization.tsx
+│   └── ServiceNodeDetails.tsx
+├── data/                # Data providers
+│   └── ServiceMapDataProvider.ts
+├── styles/              # Style definitions
+│   └── serviceMapStyles.ts
+├── utils/               # Utility functions
+│   └── statusUtils.ts
+├── types.ts             # TypeScript type definitions
+├── module.ts            # Plugin entry point
+└── plugin.json          # Plugin metadata
+```
+
+## Configuration
+
+The service map automatically fetches data from the ServiceMapDataProvider. In a production environment, replace the mock data with real API calls to your observability backend.
+
+## License
+
+Apache 2.0
