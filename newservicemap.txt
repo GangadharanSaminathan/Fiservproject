@@ -1,0 +1,786 @@
+// Project Structure:
+/*
+service-map-app/
+├── package.json
+├── tsconfig.json
+├── webpack.config.js
+├── src/
+│   ├── components/
+│   │   ├── ServiceMapPanel/
+│   │   │   ├── ServiceMapPanel.tsx
+│   │   │   ├── types.ts
+│   │   │   └── index.ts
+│   │   └── index.ts
+│   ├── scenes/
+│   │   ├── ServiceMapScene.ts
+│   │   └── index.ts
+│   ├── pages/
+│   │   ├── ServiceMapPage.tsx
+│   │   └── index.ts
+│   ├── datasources/
+│   │   ├── ServiceMapDataSource.ts
+│   │   └── index.ts
+│   ├── utils/
+│   │   ├── serviceMapUtils.ts
+│   │   └── index.ts
+│   ├── types/
+│   │   ├── serviceMap.ts
+│   │   └── index.ts
+│   ├── module.ts
+│   └── plugin.json
+├── dist/
+└── README.md
+*/
+
+// package.json
+{
+  "name": "grafana-service-map-scenes-app",
+  "version": "1.0.0",
+  "description": "Grafana Scenes app with Service Map visualization",
+  "main": "dist/module.js",
+  "scripts": {
+    "build": "webpack --mode production",
+    "dev": "webpack --mode development --watch",
+    "test": "jest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@grafana/data": "^10.0.0",
+    "@grafana/runtime": "^10.0.0",
+    "@grafana/scenes": "^4.0.0",
+    "@grafana/ui": "^10.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "rxjs": "^7.0.0",
+    "d3": "^7.0.0",
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "@types/d3": "^7.0.0",
+    "@types/lodash": "^4.14.0",
+    "typescript": "^5.0.0",
+    "webpack": "^5.0.0",
+    "webpack-cli": "^5.0.0",
+    "ts-loader": "^9.0.0",
+    "copy-webpack-plugin": "^11.0.0"
+  }
+}
+
+// tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["*"]
+    }
+  },
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}
+
+// webpack.config.js
+const path = require('path');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
+
+module.exports = {
+  entry: './src/module.ts',
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'module.js',
+    libraryTarget: 'amd',
+    clean: true,
+  },
+  externals: [
+    'lodash',
+    'react',
+    'react-dom',
+    '@grafana/data',
+    '@grafana/runtime',
+    '@grafana/scenes',
+    '@grafana/ui',
+    'd3',
+    'rxjs',
+  ],
+  plugins: [
+    new CopyWebpackPlugin({
+      patterns: [
+        { from: 'src/plugin.json', to: '.' },
+        { from: 'README.md', to: '.' },
+      ],
+    }),
+  ],
+  resolve: {
+    extensions: ['.ts', '.tsx', '.js', '.jsx'],
+    alias: {
+      '@': path.resolve(__dirname, 'src'),
+    },
+  },
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: 'ts-loader',
+        exclude: /node_modules/,
+      },
+    ],
+  },
+};
+
+// src/plugin.json
+{
+  "type": "app",
+  "name": "Service Map Scenes App",
+  "id": "service-map-scenes-app",
+  "info": {
+    "description": "Service Map visualization using Grafana Scenes",
+    "author": {
+      "name": "Your Company",
+      "url": "https://yourcompany.com"
+    },
+    "keywords": ["service map", "scenes", "observability"],
+    "version": "1.0.0",
+    "updated": "2024-01-01"
+  },
+  "includes": [
+    {
+      "type": "page",
+      "name": "Service Map",
+      "path": "/a/service-map-scenes-app",
+      "role": "Viewer",
+      "addToNav": true,
+      "defaultNav": true
+    }
+  ],
+  "dependencies": {
+    "grafanaVersion": "10.0.0",
+    "plugins": []
+  }
+}
+
+// src/types/serviceMap.ts
+export interface ServiceNode {
+  id: string;
+  name: string;
+  type: 'service' | 'database' | 'external' | 'queue';
+  status: 'healthy' | 'warning' | 'critical' | 'unknown';
+  metrics: {
+    requestRate: number;
+    errorRate: number;
+    responseTime: number;
+  };
+  position?: {
+    x: number;
+    y: number;
+  };
+}
+
+export interface ServiceEdge {
+  id: string;
+  source: string;
+  target: string;
+  metrics: {
+    requestRate: number;
+    errorRate: number;
+    responseTime: number;
+  };
+  status: 'healthy' | 'warning' | 'critical';
+}
+
+export interface ServiceMapData {
+  nodes: ServiceNode[];
+  edges: ServiceEdge[];
+  timestamp: number;
+}
+
+export interface ServiceMapOptions {
+  showMetrics: boolean;
+  layoutType: 'force' | 'hierarchical' | 'circular';
+  nodeSize: 'small' | 'medium' | 'large';
+  edgeThickness: 'thin' | 'medium' | 'thick';
+}
+
+// src/types/index.ts
+export * from './serviceMap';
+
+// src/utils/serviceMapUtils.ts
+import { ServiceNode, ServiceEdge, ServiceMapData } from '@/types';
+import { DataFrame, FieldType } from '@grafana/data';
+
+export class ServiceMapUtils {
+  static generateMockData(): ServiceMapData {
+    const nodes: ServiceNode[] = [
+      {
+        id: 'frontend',
+        name: 'Frontend Service',
+        type: 'service',
+        status: 'healthy',
+        metrics: { requestRate: 1500, errorRate: 0.5, responseTime: 45 },
+        position: { x: 100, y: 100 }
+      },
+      {
+        id: 'api-gateway',
+        name: 'API Gateway',
+        type: 'service',
+        status: 'healthy',
+        metrics: { requestRate: 1200, errorRate: 0.3, responseTime: 25 },
+        position: { x: 300, y: 100 }
+      },
+      {
+        id: 'user-service',
+        name: 'User Service',
+        type: 'service',
+        status: 'warning',
+        metrics: { requestRate: 800, errorRate: 2.1, responseTime: 120 },
+        position: { x: 500, y: 50 }
+      },
+      {
+        id: 'order-service',
+        name: 'Order Service',
+        type: 'service',
+        status: 'healthy',
+        metrics: { requestRate: 600, errorRate: 0.8, responseTime: 85 },
+        position: { x: 500, y: 150 }
+      },
+      {
+        id: 'user-db',
+        name: 'User Database',
+        type: 'database',
+        status: 'healthy',
+        metrics: { requestRate: 400, errorRate: 0.1, responseTime: 15 },
+        position: { x: 700, y: 50 }
+      },
+      {
+        id: 'order-db',
+        name: 'Order Database',
+        type: 'database',
+        status: 'healthy',
+        metrics: { requestRate: 300, errorRate: 0.2, responseTime: 20 },
+        position: { x: 700, y: 150 }
+      }
+    ];
+
+    const edges: ServiceEdge[] = [
+      {
+        id: 'frontend-api-gateway',
+        source: 'frontend',
+        target: 'api-gateway',
+        metrics: { requestRate: 1200, errorRate: 0.4, responseTime: 35 },
+        status: 'healthy'
+      },
+      {
+        id: 'api-gateway-user-service',
+        source: 'api-gateway',
+        target: 'user-service',
+        metrics: { requestRate: 600, errorRate: 1.2, responseTime: 95 },
+        status: 'warning'
+      },
+      {
+        id: 'api-gateway-order-service',
+        source: 'api-gateway',
+        target: 'order-service',
+        metrics: { requestRate: 500, errorRate: 0.6, responseTime: 65 },
+        status: 'healthy'
+      },
+      {
+        id: 'user-service-user-db',
+        source: 'user-service',
+        target: 'user-db',
+        metrics: { requestRate: 400, errorRate: 0.1, responseTime: 15 },
+        status: 'healthy'
+      },
+      {
+        id: 'order-service-order-db',
+        source: 'order-service',
+        target: 'order-db',
+        metrics: { requestRate: 300, errorRate: 0.2, responseTime: 20 },
+        status: 'healthy'
+      }
+    ];
+
+    return {
+      nodes,
+      edges,
+      timestamp: Date.now()
+    };
+  }
+
+  static convertDataFrameToServiceMap(dataFrame: DataFrame): ServiceMapData {
+    // Convert Grafana DataFrame to ServiceMapData
+    // This would be customized based on your actual data source structure
+    const nodes: ServiceNode[] = [];
+    const edges: ServiceEdge[] = [];
+
+    // Example conversion logic
+    dataFrame.fields.forEach(field => {
+      if (field.name === 'nodes' && field.type === FieldType.other) {
+        // Process nodes data
+      } else if (field.name === 'edges' && field.type === FieldType.other) {
+        // Process edges data
+      }
+    });
+
+    return {
+      nodes,
+      edges,
+      timestamp: Date.now()
+    };
+  }
+
+  static getNodeColor(status: ServiceNode['status']): string {
+    switch (status) {
+      case 'healthy': return '#52c41a';
+      case 'warning': return '#faad14';
+      case 'critical': return '#f5222d';
+      default: return '#d9d9d9';
+    }
+  }
+
+  static getNodeIcon(type: ServiceNode['type']): string {
+    switch (type) {
+      case 'service': return '🔧';
+      case 'database': return '🗄️';
+      case 'external': return '🌐';
+      case 'queue': return '📬';
+      default: return '⚪';
+    }
+  }
+}
+
+// src/utils/index.ts
+export * from './serviceMapUtils';
+
+// src/datasources/ServiceMapDataSource.ts
+import { DataSourceApi, DataQuery, DataQueryRequest, DataQueryResponse } from '@grafana/data';
+import { ServiceMapData } from '@/types';
+import { ServiceMapUtils } from '@/utils';
+
+export interface ServiceMapQuery extends DataQuery {
+  serviceMapType: 'topology' | 'metrics';
+  timeRange?: {
+    from: number;
+    to: number;
+  };
+}
+
+export class ServiceMapDataSource extends DataSourceApi<ServiceMapQuery> {
+  constructor() {
+    super({ name: 'ServiceMap' } as any);
+  }
+
+  async query(request: DataQueryRequest<ServiceMapQuery>): Promise<DataQueryResponse> {
+    // In a real implementation, this would fetch data from your service map backend
+    // For now, we'll return mock data
+    const mockData = ServiceMapUtils.generateMockData();
+    
+    return {
+      data: [
+        {
+          name: 'ServiceMap',
+          fields: [
+            {
+              name: 'serviceMapData',
+              type: 'other' as any,
+              config: {},
+              values: [mockData]
+            }
+          ],
+          length: 1
+        }
+      ]
+    };
+  }
+
+  async testDatasource() {
+    return {
+      status: 'success',
+      message: 'Service Map data source is working'
+    };
+  }
+}
+
+// src/datasources/index.ts
+export * from './ServiceMapDataSource';
+
+// src/components/ServiceMapPanel/types.ts
+import { PanelProps } from '@grafana/data';
+import { ServiceMapOptions } from '@/types';
+
+export interface ServiceMapPanelOptions extends ServiceMapOptions {
+  title?: string;
+}
+
+export interface ServiceMapPanelProps extends PanelProps<ServiceMapPanelOptions> {}
+
+// src/components/ServiceMapPanel/ServiceMapPanel.tsx
+import React, { useEffect, useRef, useState } from 'react';
+import { css } from '@emotion/css';
+import { useTheme2 } from '@grafana/ui';
+import { GrafanaTheme2 } from '@grafana/data';
+import * as d3 from 'd3';
+import { ServiceMapData, ServiceNode, ServiceEdge } from '@/types';
+import { ServiceMapUtils } from '@/utils';
+import { ServiceMapPanelProps } from './types';
+
+export const ServiceMapPanel: React.FC<ServiceMapPanelProps> = ({ 
+  data, 
+  width, 
+  height, 
+  options 
+}) => {
+  const theme = useTheme2();
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [serviceMapData, setServiceMapData] = useState<ServiceMapData | null>(null);
+
+  const styles = getStyles(theme);
+
+  useEffect(() => {
+    if (data.series.length > 0) {
+      // Extract service map data from the data frame
+      const firstSeries = data.series[0];
+      const serviceMapField = firstSeries.fields.find(f => f.name === 'serviceMapData');
+      
+      if (serviceMapField && serviceMapField.values.length > 0) {
+        setServiceMapData(serviceMapField.values[0] as ServiceMapData);
+      } else {
+        // Fallback to mock data
+        setServiceMapData(ServiceMapUtils.generateMockData());
+      }
+    } else {
+      setServiceMapData(ServiceMapUtils.generateMockData());
+    }
+  }, [data]);
+
+  useEffect(() => {
+    if (!serviceMapData || !svgRef.current) {
+      return;
+    }
+
+    renderServiceMap();
+  }, [serviceMapData, width, height, options, theme]);
+
+  const renderServiceMap = () => {
+    if (!svgRef.current || !serviceMapData) return;
+
+    const svg = d3.select(svgRef.current);
+    svg.selectAll('*').remove();
+
+    const g = svg.append('g');
+
+    // Create simulation for force layout
+    const simulation = d3.forceSimulation(serviceMapData.nodes as any)
+      .force('link', d3.forceLink(serviceMapData.edges).id((d: any) => d.id))
+      .force('charge', d3.forceManyBody().strength(-300))
+      .force('center', d3.forceCenter(width / 2, height / 2));
+
+    // Create links/edges
+    const link = g.append('g')
+      .selectAll('line')
+      .data(serviceMapData.edges)
+      .enter()
+      .append('line')
+      .attr('class', styles.edge)
+      .attr('stroke-width', (d: ServiceEdge) => {
+        const thickness = options.edgeThickness || 'medium';
+        return thickness === 'thin' ? 2 : thickness === 'thick' ? 6 : 4;
+      })
+      .attr('stroke', (d: ServiceEdge) => ServiceMapUtils.getNodeColor(d.status));
+
+    // Create nodes
+    const node = g.append('g')
+      .selectAll('g')
+      .data(serviceMapData.nodes)
+      .enter()
+      .append('g')
+      .attr('class', styles.node);
+
+    // Add circles for nodes
+    node.append('circle')
+      .attr('r', () => {
+        const size = options.nodeSize || 'medium';
+        return size === 'small' ? 15 : size === 'large' ? 25 : 20;
+      })
+      .attr('fill', (d: ServiceNode) => ServiceMapUtils.getNodeColor(d.status))
+      .attr('stroke', theme.colors.border.medium)
+      .attr('stroke-width', 2);
+
+    // Add labels
+    node.append('text')
+      .text((d: ServiceNode) => d.name)
+      .attr('class', styles.nodeLabel)
+      .attr('dy', -25)
+      .attr('text-anchor', 'middle');
+
+    // Add metrics if enabled
+    if (options.showMetrics) {
+      node.append('text')
+        .text((d: ServiceNode) => `${d.metrics.requestRate} req/s`)
+        .attr('class', styles.nodeMetrics)
+        .attr('dy', 35)
+        .attr('text-anchor', 'middle');
+    }
+
+    // Add drag behavior
+    const drag = d3.drag<SVGGElement, ServiceNode>()
+      .on('start', (event, d) => {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x;
+        d.fy = d.y;
+      })
+      .on('drag', (event, d) => {
+        d.fx = event.x;
+        d.fy = event.y;
+      })
+      .on('end', (event, d) => {
+        if (!event.active) simulation.alphaTarget(0);
+        d.fx = null;
+        d.fy = null;
+      });
+
+    node.call(drag as any);
+
+    // Update positions on simulation tick
+    simulation.on('tick', () => {
+      link
+        .attr('x1', (d: any) => d.source.x)
+        .attr('y1', (d: any) => d.source.y)
+        .attr('x2', (d: any) => d.target.x)
+        .attr('y2', (d: any) => d.target.y);
+
+      node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+    });
+
+    // Add zoom behavior
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.1, 4])
+      .on('zoom', (event) => {
+        g.attr('transform', event.transform);
+      });
+
+    svg.call(zoom);
+  };
+
+  return (
+    <div className={styles.container}>
+      <svg
+        ref={svgRef}
+        width={width}
+        height={height}
+        className={styles.svg}
+      />
+    </div>
+  );
+};
+
+const getStyles = (theme: GrafanaTheme2) => ({
+  container: css`
+    position: relative;
+    width: 100%;
+    height: 100%;
+  `,
+  svg: css`
+    background: ${theme.colors.background.primary};
+    border: 1px solid ${theme.colors.border.weak};
+  `,
+  node: css`
+    cursor: pointer;
+    
+    &:hover circle {
+      stroke-width: 3px;
+    }
+  `,
+  nodeLabel: css`
+    fill: ${theme.colors.text.primary};
+    font-size: 12px;
+    font-weight: 500;
+    pointer-events: none;
+  `,
+  nodeMetrics: css`
+    fill: ${theme.colors.text.secondary};
+    font-size: 10px;
+    pointer-events: none;
+  `,
+  edge: css`
+    stroke-opacity: 0.8;
+    
+    &:hover {
+      stroke-opacity: 1;
+      stroke-width: 6px !important;
+    }
+  `
+});
+
+// src/components/ServiceMapPanel/index.ts
+export * from './ServiceMapPanel';
+export * from './types';
+
+// src/components/index.ts
+export * from './ServiceMapPanel';
+
+// src/scenes/ServiceMapScene.ts
+import {
+  EmbeddedScene,
+  SceneAppPage,
+  SceneAppPageState,
+  SceneControlsSpacer,
+  SceneRefreshPicker,
+  SceneTimePicker,
+  SceneTimeRange,
+  VizPanel,
+  SceneFlexLayout,
+  SceneFlexItem,
+} from '@grafana/scenes';
+import { ServiceMapDataSource } from '@/datasources';
+
+export function getServiceMapScene(): EmbeddedScene {
+  const timeRange = new SceneTimeRange({
+    from: 'now-1h',
+    to: 'now',
+  });
+
+  const serviceMapDataSource = new ServiceMapDataSource();
+
+  const serviceMapPanel = new VizPanel({
+    title: 'Service Map',
+    pluginId: 'service-map-panel', // This would be your custom panel plugin ID
+    options: {
+      showMetrics: true,
+      layoutType: 'force',
+      nodeSize: 'medium',
+      edgeThickness: 'medium',
+    },
+    targets: [
+      {
+        refId: 'A',
+        serviceMapType: 'topology',
+        datasource: serviceMapDataSource,
+      },
+    ],
+  });
+
+  return new EmbeddedScene({
+    $timeRange: timeRange,
+    controls: [
+      new SceneTimePicker({}),
+      new SceneRefreshPicker({
+        intervals: ['5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h'],
+        refresh: '30s',
+      }),
+      new SceneControlsSpacer(),
+    ],
+    body: new SceneFlexLayout({
+      direction: 'column',
+      children: [
+        new SceneFlexItem({
+          minHeight: 600,
+          body: serviceMapPanel,
+        }),
+      ],
+    }),
+  });
+}
+
+// src/scenes/index.ts
+export * from './ServiceMapScene';
+
+// src/pages/ServiceMapPage.tsx
+import React from 'react';
+import { PluginPage } from '@grafana/runtime';
+import { getServiceMapScene } from '@/scenes';
+
+export const ServiceMapPage: React.FC = () => {
+  const scene = getServiceMapScene();
+
+  return (
+    <PluginPage>
+      <scene.Component model={scene} />
+    </PluginPage>
+  );
+};
+
+// src/pages/index.ts
+export * from './ServiceMapPage';
+
+// src/module.ts
+import { AppPlugin } from '@grafana/data';
+import { ServiceMapPage } from '@/pages';
+
+export const plugin = new AppPlugin().addPage({
+  title: 'Service Map',
+  icon: 'sitemap',
+  path: '/a/service-map-scenes-app',
+  component: ServiceMapPage,
+});
+
+// README.md
+# Grafana Service Map Scenes App
+
+A Grafana application plugin that provides service map visualization using Grafana Scenes framework.
+
+## Features
+
+- Interactive service map visualization with D3.js
+- Force-directed layout with drag and zoom capabilities
+- Real-time metrics display
+- Multiple node types (services, databases, external systems)
+- Status-based color coding
+- Configurable layout options
+
+## Installation
+
+1. Clone this repository to your Grafana plugins directory
+2. Install dependencies: `npm install`
+3. Build the plugin: `npm run build`
+4. Restart Grafana
+5. Enable the plugin in Grafana settings
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Start development build with watch mode
+npm run dev
+
+# Type checking
+npm run typecheck
+
+# Production build
+npm run build
+```
+
+## Configuration
+
+The service map supports various configuration options:
+- Show/hide metrics
+- Layout types: force, hierarchical, circular
+- Node sizes: small, medium, large
+- Edge thickness: thin, medium, thick
+
+## Data Source Integration
+
+Customize the `ServiceMapDataSource` class to integrate with your observability backend (Jaeger, Zipkin, custom APIs, etc.).
+
+## License
+
+MIT
