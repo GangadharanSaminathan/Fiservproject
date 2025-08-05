@@ -1,0 +1,909 @@
+// File: src/types/index.ts
+export interface Node {
+  id: string;
+  title: string;
+  subTitle?: string;
+  mainStat: string;
+  secondaryStat?: string;
+  arc__success?: number;
+  arc__errors?: number;
+  arc__throttled?: number;
+  color?: string;
+  x?: number;
+  y?: number;
+}
+
+export interface Edge {
+  id: string;
+  source: string;
+  target: string;
+  mainStat: string;
+  secondaryStat?: string;
+  thickness?: number;
+}
+
+export interface NodeGraphData {
+  nodes: Node[];
+  edges: Edge[];
+}
+
+// File: src/components/NodeEditModal.tsx
+import React, { useState, useEffect } from 'react';
+import { Modal, Field, Input, Button, HorizontalGroup } from '@grafana/ui';
+import { Node } from '../types';
+
+interface NodeEditModalProps {
+  isOpen: boolean;
+  node?: Node;
+  onSave: (node: Node) => void;
+  onClose: () => void;
+}
+
+export const NodeEditModal: React.FC<NodeEditModalProps> = ({
+  isOpen,
+  node,
+  onSave,
+  onClose,
+}) => {
+  const [formData, setFormData] = useState<Partial<Node>>({
+    id: '',
+    title: '',
+    subTitle: '',
+    mainStat: '0',
+    secondaryStat: '0',
+    arc__success: 0.8,
+    arc__errors: 0.1,
+    arc__throttled: 0.1,
+    color: '#1f77b4',
+  });
+
+  useEffect(() => {
+    if (node) {
+      setFormData(node);
+    } else {
+      setFormData({
+        id: `node_${Date.now()}`,
+        title: '',
+        subTitle: '',
+        mainStat: '0',
+        secondaryStat: '0',
+        arc__success: 0.8,
+        arc__errors: 0.1,
+        arc__throttled: 0.1,
+        color: '#1f77b4',
+      });
+    }
+  }, [node]);
+
+  const handleSave = () => {
+    if (formData.id && formData.title) {
+      onSave(formData as Node);
+      onClose();
+    }
+  };
+
+  return (
+    <Modal
+      title={node ? 'Edit Node' : 'Add Node'}
+      isOpen={isOpen}
+      onDismiss={onClose}
+    >
+      <div style={{ width: '400px' }}>
+        <Field label="ID">
+          <Input
+            value={formData.id || ''}
+            onChange={(e) => setFormData({ ...formData, id: e.currentTarget.value })}
+            disabled={!!node}
+          />
+        </Field>
+        
+        <Field label="Title">
+          <Input
+            value={formData.title || ''}
+            onChange={(e) => setFormData({ ...formData, title: e.currentTarget.value })}
+          />
+        </Field>
+        
+        <Field label="Subtitle">
+          <Input
+            value={formData.subTitle || ''}
+            onChange={(e) => setFormData({ ...formData, subTitle: e.currentTarget.value })}
+          />
+        </Field>
+        
+        <Field label="Main Stat">
+          <Input
+            value={formData.mainStat || ''}
+            onChange={(e) => setFormData({ ...formData, mainStat: e.currentTarget.value })}
+          />
+        </Field>
+        
+        <Field label="Secondary Stat">
+          <Input
+            value={formData.secondaryStat || ''}
+            onChange={(e) => setFormData({ ...formData, secondaryStat: e.currentTarget.value })}
+          />
+        </Field>
+        
+        <Field label="Success Rate">
+          <Input
+            type="number"
+            min="0"
+            max="1"
+            step="0.1"
+            value={formData.arc__success || 0}
+            onChange={(e) => setFormData({ ...formData, arc__success: parseFloat(e.currentTarget.value) })}
+          />
+        </Field>
+        
+        <Field label="Error Rate">
+          <Input
+            type="number"
+            min="0"
+            max="1"
+            step="0.1"
+            value={formData.arc__errors || 0}
+            onChange={(e) => setFormData({ ...formData, arc__errors: parseFloat(e.currentTarget.value) })}
+          />
+        </Field>
+        
+        <HorizontalGroup>
+          <Button onClick={handleSave} variant="primary">
+            {node ? 'Update' : 'Add'} Node
+          </Button>
+          <Button onClick={onClose} variant="secondary">
+            Cancel
+          </Button>
+        </HorizontalGroup>
+      </div>
+    </Modal>
+  );
+};
+
+// File: src/components/EdgeEditModal.tsx
+import React, { useState, useEffect } from 'react';
+import { Modal, Field, Input, Button, HorizontalGroup, Select } from '@grafana/ui';
+import { Edge, Node } from '../types';
+
+interface EdgeEditModalProps {
+  isOpen: boolean;
+  edge?: Edge;
+  nodes: Node[];
+  onSave: (edge: Edge) => void;
+  onClose: () => void;
+}
+
+export const EdgeEditModal: React.FC<EdgeEditModalProps> = ({
+  isOpen,
+  edge,
+  nodes,
+  onSave,
+  onClose,
+}) => {
+  const [formData, setFormData] = useState<Partial<Edge>>({
+    id: '',
+    source: '',
+    target: '',
+    mainStat: '0',
+    secondaryStat: '0',
+    thickness: 1,
+  });
+
+  const nodeOptions = nodes.map(node => ({
+    label: node.title,
+    value: node.id,
+  }));
+
+  useEffect(() => {
+    if (edge) {
+      setFormData(edge);
+    } else {
+      setFormData({
+        id: `edge_${Date.now()}`,
+        source: '',
+        target: '',
+        mainStat: '0',
+        secondaryStat: '0',
+        thickness: 1,
+      });
+    }
+  }, [edge]);
+
+  const handleSave = () => {
+    if (formData.id && formData.source && formData.target && formData.source !== formData.target) {
+      onSave(formData as Edge);
+      onClose();
+    }
+  };
+
+  return (
+    <Modal
+      title={edge ? 'Edit Edge' : 'Add Edge'}
+      isOpen={isOpen}
+      onDismiss={onClose}
+    >
+      <div style={{ width: '400px' }}>
+        <Field label="ID">
+          <Input
+            value={formData.id || ''}
+            onChange={(e) => setFormData({ ...formData, id: e.currentTarget.value })}
+            disabled={!!edge}
+          />
+        </Field>
+        
+        <Field label="Source Node">
+          <Select
+            options={nodeOptions}
+            value={formData.source}
+            onChange={(option) => setFormData({ ...formData, source: option?.value || '' })}
+          />
+        </Field>
+        
+        <Field label="Target Node">
+          <Select
+            options={nodeOptions}
+            value={formData.target}
+            onChange={(option) => setFormData({ ...formData, target: option?.value || '' })}
+          />
+        </Field>
+        
+        <Field label="Main Stat">
+          <Input
+            value={formData.mainStat || ''}
+            onChange={(e) => setFormData({ ...formData, mainStat: e.currentTarget.value })}
+          />
+        </Field>
+        
+        <Field label="Secondary Stat">
+          <Input
+            value={formData.secondaryStat || ''}
+            onChange={(e) => setFormData({ ...formData, secondaryStat: e.currentTarget.value })}
+          />
+        </Field>
+        
+        <Field label="Thickness">
+          <Input
+            type="number"
+            min="1"
+            max="10"
+            value={formData.thickness || 1}
+            onChange={(e) => setFormData({ ...formData, thickness: parseInt(e.currentTarget.value) })}
+          />
+        </Field>
+        
+        <HorizontalGroup>
+          <Button onClick={handleSave} variant="primary">
+            {edge ? 'Update' : 'Add'} Edge
+          </Button>
+          <Button onClick={onClose} variant="secondary">
+            Cancel
+          </Button>
+        </HorizontalGroup>
+      </div>
+    </Modal>
+  );
+};
+
+// File: src/components/NodeGraphPanel.tsx
+import React, { useState } from 'react';
+import { 
+  SceneComponentProps, 
+  SceneObjectBase, 
+  SceneObjectState,
+  VizPanel 
+} from '@grafana/scenes';
+import { 
+  Button, 
+  HorizontalGroup, 
+  VerticalGroup,
+  ConfirmModal,
+  useTheme2 
+} from '@grafana/ui';
+import { PanelData, LoadingState } from '@grafana/data';
+import { NodeEditModal } from './NodeEditModal';
+import { EdgeEditModal } from './EdgeEditModal';
+import { Node, Edge, NodeGraphData } from '../types';
+
+interface NodeGraphPanelState extends SceneObjectState {
+  data: NodeGraphData;
+  selectedNode?: Node;
+  selectedEdge?: Edge;
+}
+
+export class NodeGraphPanel extends SceneObjectBase<NodeGraphPanelState> {
+  constructor(initialData?: NodeGraphData) {
+    super({
+      data: initialData || { nodes: [], edges: [] },
+    });
+  }
+
+  updateData(data: NodeGraphData) {
+    this.setState({ data });
+  }
+
+  addNode(node: Node) {
+    const currentData = this.state.data;
+    this.setState({
+      data: {
+        ...currentData,
+        nodes: [...currentData.nodes, node],
+      },
+    });
+  }
+
+  updateNode(updatedNode: Node) {
+    const currentData = this.state.data;
+    this.setState({
+      data: {
+        ...currentData,
+        nodes: currentData.nodes.map(node => 
+          node.id === updatedNode.id ? updatedNode : node
+        ),
+      },
+    });
+  }
+
+  deleteNode(nodeId: string) {
+    const currentData = this.state.data;
+    this.setState({
+      data: {
+        nodes: currentData.nodes.filter(node => node.id !== nodeId),
+        edges: currentData.edges.filter(edge => 
+          edge.source !== nodeId && edge.target !== nodeId
+        ),
+      },
+    });
+  }
+
+  addEdge(edge: Edge) {
+    const currentData = this.state.data;
+    this.setState({
+      data: {
+        ...currentData,
+        edges: [...currentData.edges, edge],
+      },
+    });
+  }
+
+  updateEdge(updatedEdge: Edge) {
+    const currentData = this.state.data;
+    this.setState({
+      data: {
+        ...currentData,
+        edges: currentData.edges.map(edge => 
+          edge.id === updatedEdge.id ? updatedEdge : edge
+        ),
+      },
+    });
+  }
+
+  deleteEdge(edgeId: string) {
+    const currentData = this.state.data;
+    this.setState({
+      data: {
+        ...currentData,
+        edges: currentData.edges.filter(edge => edge.id !== edgeId),
+      },
+    });
+  }
+
+  static Component = ({ model }: SceneComponentProps<NodeGraphPanel>) => {
+    const { data } = model.useState();
+    const [showNodeModal, setShowNodeModal] = useState(false);
+    const [showEdgeModal, setShowEdgeModal] = useState(false);
+    const [editingNode, setEditingNode] = useState<Node | undefined>();
+    const [editingEdge, setEditingEdge] = useState<Edge | undefined>();
+    const [confirmDelete, setConfirmDelete] = useState<{ type: 'node' | 'edge'; id: string } | null>(null);
+    const theme = useTheme2();
+
+    // Convert our data to the format expected by NodeGraph panel
+    const panelData: PanelData = {
+      state: LoadingState.Done,
+      series: [
+        {
+          name: 'nodes',
+          fields: [
+            { name: 'id', values: data.nodes.map(n => n.id) },
+            { name: 'title', values: data.nodes.map(n => n.title) },
+            { name: 'subTitle', values: data.nodes.map(n => n.subTitle || '') },
+            { name: 'mainStat', values: data.nodes.map(n => n.mainStat) },
+            { name: 'secondaryStat', values: data.nodes.map(n => n.secondaryStat || '') },
+            { name: 'arc__success', values: data.nodes.map(n => n.arc__success || 0) },
+            { name: 'arc__errors', values: data.nodes.map(n => n.arc__errors || 0) },
+            { name: 'arc__throttled', values: data.nodes.map(n => n.arc__throttled || 0) },
+          ],
+          length: data.nodes.length,
+        },
+        {
+          name: 'edges',
+          fields: [
+            { name: 'id', values: data.edges.map(e => e.id) },
+            { name: 'source', values: data.edges.map(e => e.source) },
+            { name: 'target', values: data.edges.map(e => e.target) },
+            { name: 'mainStat', values: data.edges.map(e => e.mainStat) },
+            { name: 'secondaryStat', values: data.edges.map(e => e.secondaryStat || '') },
+            { name: 'thickness', values: data.edges.map(e => e.thickness || 1) },
+          ],
+          length: data.edges.length,
+        },
+      ],
+      timeRange: {} as any,
+    };
+
+    const handleAddNode = () => {
+      setEditingNode(undefined);
+      setShowNodeModal(true);
+    };
+
+    const handleEditNode = (node: Node) => {
+      setEditingNode(node);
+      setShowNodeModal(true);
+    };
+
+    const handleSaveNode = (node: Node) => {
+      if (editingNode) {
+        model.updateNode(node);
+      } else {
+        model.addNode(node);
+      }
+      setShowNodeModal(false);
+      setEditingNode(undefined);
+    };
+
+    const handleAddEdge = () => {
+      setEditingEdge(undefined);
+      setShowEdgeModal(true);
+    };
+
+    const handleEditEdge = (edge: Edge) => {
+      setEditingEdge(edge);
+      setShowEdgeModal(true);
+    };
+
+    const handleSaveEdge = (edge: Edge) => {
+      if (editingEdge) {
+        model.updateEdge(edge);
+      } else {
+        model.addEdge(edge);
+      }
+      setShowEdgeModal(false);
+      setEditingEdge(undefined);
+    };
+
+    const handleDelete = () => {
+      if (confirmDelete) {
+        if (confirmDelete.type === 'node') {
+          model.deleteNode(confirmDelete.id);
+        } else {
+          model.deleteEdge(confirmDelete.id);
+        }
+        setConfirmDelete(null);
+      }
+    };
+
+    return (
+      <VerticalGroup>
+        <HorizontalGroup>
+          <Button onClick={handleAddNode} variant="primary">
+            Add Node
+          </Button>
+          <Button 
+            onClick={handleAddEdge} 
+            variant="secondary"
+            disabled={data.nodes.length < 2}
+          >
+            Add Edge
+          </Button>
+        </HorizontalGroup>
+
+        <div style={{ height: '600px', width: '100%' }}>
+          <VizPanel
+            key="nodegraph-panel"
+            pluginId="nodegraph"
+            title="Node Graph"
+            data={panelData}
+            options={{
+              layout: {
+                hierarchical: {
+                  enabled: false,
+                },
+              },
+            }}
+          />
+        </div>
+
+        {/* Node List */}
+        <div>
+          <h4>Nodes ({data.nodes.length})</h4>
+          {data.nodes.map(node => (
+            <div 
+              key={node.id} 
+              style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                padding: '8px',
+                margin: '4px 0',
+                backgroundColor: theme.colors.background.secondary,
+                borderRadius: '4px'
+              }}
+            >
+              <span>{node.title} ({node.id})</span>
+              <HorizontalGroup>
+                <Button 
+                  size="sm" 
+                  variant="secondary"
+                  onClick={() => handleEditNode(node)}
+                >
+                  Edit
+                </Button>
+                <Button 
+                  size="sm" 
+                  variant="destructive"
+                  onClick={() => setConfirmDelete({ type: 'node', id: node.id })}
+                >
+                  Delete
+                </Button>
+              </HorizontalGroup>
+            </div>
+          ))}
+        </div>
+
+        {/* Edge List */}
+        <div>
+          <h4>Edges ({data.edges.length})</h4>
+          {data.edges.map(edge => (
+            <div 
+              key={edge.id}
+              style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                padding: '8px',
+                margin: '4px 0',
+                backgroundColor: theme.colors.background.secondary,
+                borderRadius: '4px'
+              }}
+            >
+              <span>{edge.source} → {edge.target}</span>
+              <HorizontalGroup>
+                <Button 
+                  size="sm" 
+                  variant="secondary"
+                  onClick={() => handleEditEdge(edge)}
+                >
+                  Edit
+                </Button>
+                <Button 
+                  size="sm" 
+                  variant="destructive"
+                  onClick={() => setConfirmDelete({ type: 'edge', id: edge.id })}
+                >
+                  Delete
+                </Button>
+              </HorizontalGroup>
+            </div>
+          ))}
+        </div>
+
+        <NodeEditModal
+          isOpen={showNodeModal}
+          node={editingNode}
+          onSave={handleSaveNode}
+          onClose={() => {
+            setShowNodeModal(false);
+            setEditingNode(undefined);
+          }}
+        />
+
+        <EdgeEditModal
+          isOpen={showEdgeModal}
+          edge={editingEdge}
+          nodes={data.nodes}
+          onSave={handleSaveEdge}
+          onClose={() => {
+            setShowEdgeModal(false);
+            setEditingEdge(undefined);
+          }}
+        />
+
+        {confirmDelete && (
+          <ConfirmModal
+            isOpen={true}
+            title={`Delete ${confirmDelete.type}`}
+            body={`Are you sure you want to delete this ${confirmDelete.type}?`}
+            confirmText="Delete"
+            onConfirm={handleDelete}
+            onDismiss={() => setConfirmDelete(null)}
+          />
+        )}
+      </VerticalGroup>
+    );
+  };
+}
+
+// File: src/scenes/NodeGraphScene.tsx
+import { 
+  EmbeddedScene, 
+  SceneAppPage, 
+  SceneAppPageState,
+  SceneRouteMatch 
+} from '@grafana/scenes';
+import { NodeGraphPanel } from '../components/NodeGraphPanel';
+import { NodeGraphData } from '../types';
+
+interface NodeGraphSceneState extends SceneAppPageState {
+  nodeGraphPanel: NodeGraphPanel;
+}
+
+// Sample data
+const sampleData: NodeGraphData = {
+  nodes: [
+    {
+      id: 'frontend',
+      title: 'Frontend',
+      subTitle: 'React App',
+      mainStat: '99.5%',
+      secondaryStat: '1.2s',
+      arc__success: 0.95,
+      arc__errors: 0.03,
+      arc__throttled: 0.02,
+    },
+    {
+      id: 'api-gateway',
+      title: 'API Gateway',
+      subTitle: 'Kong',
+      mainStat: '99.9%',
+      secondaryStat: '50ms',
+      arc__success: 0.99,
+      arc__errors: 0.005,
+      arc__throttled: 0.005,
+    },
+    {
+      id: 'auth-service',
+      title: 'Auth Service',
+      subTitle: 'OAuth2',
+      mainStat: '99.8%',
+      secondaryStat: '80ms',
+      arc__success: 0.98,
+      arc__errors: 0.01,
+      arc__throttled: 0.01,
+    },
+    {
+      id: 'database',
+      title: 'Database',
+      subTitle: 'PostgreSQL',
+      mainStat: '99.99%',
+      secondaryStat: '5ms',
+      arc__success: 0.999,
+      arc__errors: 0.001,
+      arc__throttled: 0,
+    },
+  ],
+  edges: [
+    {
+      id: 'frontend-api',
+      source: 'frontend',
+      target: 'api-gateway',
+      mainStat: '1000 req/s',
+      secondaryStat: '2ms',
+      thickness: 3,
+    },
+    {
+      id: 'api-auth',
+      source: 'api-gateway',
+      target: 'auth-service',
+      mainStat: '200 req/s',
+      secondaryStat: '5ms',
+      thickness: 2,
+    },
+    {
+      id: 'auth-db',
+      source: 'auth-service',
+      target: 'database',
+      mainStat: '150 req/s',
+      secondaryStat: '3ms',
+      thickness: 2,
+    },
+  ],
+};
+
+export class NodeGraphScene extends SceneAppPage<NodeGraphSceneState> {
+  constructor(routeMatch: SceneRouteMatch<{}>) {
+    const nodeGraphPanel = new NodeGraphPanel(sampleData);
+    
+    super({
+      title: 'Node Graph Dashboard',
+      subTitle: 'Interactive node graph with add/edit capabilities',
+      nodeGraphPanel,
+      body: new EmbeddedScene({
+        body: nodeGraphPanel,
+      }),
+    });
+  }
+
+  static Component = NodeGraphScene.Component;
+}
+
+// File: src/app.tsx
+import React from 'react';
+import { 
+  SceneApp, 
+  SceneAppPage,
+  SceneRouteMatch 
+} from '@grafana/scenes';
+import { NodeGraphScene } from './scenes/NodeGraphScene';
+
+class NodeGraphApp extends SceneApp {
+  constructor() {
+    super({
+      pages: [
+        new SceneAppPage({
+          title: 'Node Graph',
+          url: '/a/nodegraph-app',
+          getScene: (routeMatch: SceneRouteMatch<{}>) => new NodeGraphScene(routeMatch),
+        }),
+      ],
+    });
+  }
+}
+
+export const app = new NodeGraphApp();
+
+// File: src/utils/dataUtils.ts
+import { NodeGraphData, Node, Edge } from '../types';
+
+export const validateNode = (node: Partial<Node>): node is Node => {
+  return !!(node.id && node.title && node.mainStat);
+};
+
+export const validateEdge = (edge: Partial<Edge>, nodes: Node[]): edge is Edge => {
+  const nodeIds = nodes.map(n => n.id);
+  return !!(
+    edge.id && 
+    edge.source && 
+    edge.target && 
+    edge.mainStat &&
+    nodeIds.includes(edge.source) &&
+    nodeIds.includes(edge.target) &&
+    edge.source !== edge.target
+  );
+};
+
+export const exportData = (data: NodeGraphData): string => {
+  return JSON.stringify(data, null, 2);
+};
+
+export const importData = (jsonString: string): NodeGraphData | null => {
+  try {
+    const data = JSON.parse(jsonString);
+    if (data.nodes && data.edges && Array.isArray(data.nodes) && Array.isArray(data.edges)) {
+      return data as NodeGraphData;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+// File: plugin.json
+{
+  "type": "app",
+  "name": "NodeGraph Scenes App",
+  "id": "nodegraph-scenes-app",
+  "info": {
+    "description": "Interactive NodeGraph application built with Grafana Scenes",
+    "author": {
+      "name": "Your Organization"
+    },
+    "keywords": ["nodegraph", "scenes", "visualization"],
+    "version": "1.0.0",
+    "updated": "2025-01-01"
+  },
+  "includes": [
+    {
+      "type": "page",
+      "name": "Node Graph",
+      "path": "/a/nodegraph-scenes-app",
+      "role": "Viewer",
+      "addToNav": true
+    }
+  ],
+  "dependencies": {
+    "grafanaDependency": ">=9.0.0"
+  }
+}
+
+// File: package.json
+{
+  "name": "nodegraph-scenes-app",
+  "version": "1.0.0",
+  "description": "Grafana Scenes NodeGraph application with add/edit features",
+  "scripts": {
+    "build": "grafana-toolkit plugin:build",
+    "dev": "grafana-toolkit plugin:dev",
+    "test": "grafana-toolkit plugin:test",
+    "sign": "grafana-toolkit plugin:sign"
+  },
+  "devDependencies": {
+    "@grafana/toolkit": "latest",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0"
+  },
+  "dependencies": {
+    "@grafana/data": "latest",
+    "@grafana/scenes": "latest",
+    "@grafana/ui": "latest",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  }
+}
+
+// File: README.md
+# Grafana Scenes NodeGraph App
+
+This is a complete Grafana Scenes application that provides an interactive NodeGraph visualization with add and edit capabilities.
+
+## Features
+
+- **Interactive NodeGraph**: Built using Grafana's NodeGraph panel
+- **Add/Edit Nodes**: Create and modify nodes with customizable properties
+- **Add/Edit Edges**: Create connections between nodes with statistics
+- **Delete Functionality**: Remove nodes and edges with confirmation
+- **Data Management**: Export/import functionality for node graph data
+- **Responsive UI**: Clean interface with proper modals and forms
+
+## File Structure
+
+```
+src/
+├── types/
+│   └── index.ts              # TypeScript interfaces
+├── components/
+│   ├── NodeEditModal.tsx     # Node add/edit modal
+│   ├── EdgeEditModal.tsx     # Edge add/edit modal
+│   └── NodeGraphPanel.tsx    # Main panel component
+├── scenes/
+│   └── NodeGraphScene.tsx    # Scene configuration
+├── utils/
+│   └── dataUtils.ts          # Utility functions
+└── app.tsx                   # Main app entry point
+```
+
+## Node Properties
+
+- **ID**: Unique identifier
+- **Title**: Display name
+- **Subtitle**: Additional context
+- **Main Stat**: Primary metric
+- **Secondary Stat**: Additional metric
+- **Arc Success/Error/Throttled**: Visual indicators (0-1 range)
+
+## Edge Properties
+
+- **ID**: Unique identifier
+- **Source/Target**: Connected nodes
+- **Main/Secondary Stats**: Connection metrics
+- **Thickness**: Visual weight (1-10)
+
+## Installation
+
+1. Clone this code into your Grafana plugins directory
+2. Run `npm install` to install dependencies
+3. Run `npm run build` to build the plugin
+4. Restart Grafana
+5. Enable the plugin in Grafana settings
+
+## Usage
+
+1. Navigate to the NodeGraph app page
+2. Use "Add Node" to create new nodes
+3. Use "Add Edge" to connect nodes (requires 2+ nodes)
+4. Click "Edit" on any node or edge to modify properties
+5. Click "Delete" to remove items (with confirmation)
+
+## Development
+
+- `npm run dev`: Start development server
+- `npm run build`: Build for production
+- `npm run test`: Run tests
