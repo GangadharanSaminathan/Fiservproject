@@ -1,0 +1,2866 @@
+// File: src/components/DragControls.tsx
+import React, { useState } from 'react';
+import { Button, Switch, Slider } from '@grafana/ui';
+import { css } from '@emotion/css';
+import { GrafanaTheme2 } from '@grafana/data';
+import { useStyles2 } from '@grafana/ui';
+
+interface DragControlsProps {
+  onToggleDragMode: (enabled: boolean) => void;
+  onResetPositions: () => void;
+  onTogglePhysics: (enabled: boolean) => void;
+  onForceStrengthChange: (strength: number) => void;
+  onLinkDistanceChange: (distance: number) => void;
+}
+
+const getControlStyles = (theme: GrafanaTheme2) => ({
+  controls: css`
+    position: absolute;
+    top: ${theme.spacing(2)};
+    left: ${theme.spacing(2)};
+    background: ${theme.colors.background.secondary};
+    border: 1px solid ${theme.colors.border.medium};
+    border-radius: ${theme.shape.borderRadius()};
+    padding: ${theme.spacing(2)};
+    z-index: 1000;
+    min-width: 200px;
+  `,
+  title: css`
+    font-size: ${theme.typography.h6.fontSize};
+    font-weight: ${theme.typography.fontWeightMedium};
+    margin-bottom: ${theme.spacing(2)};
+    color: ${theme.colors.text.primary};
+  `,
+  section: css`
+    margin-bottom: ${theme.spacing(2)};
+    
+    &:last-child {
+      margin-bottom: 0;
+    }
+  `,
+  sectionTitle: css`
+    font-size: ${theme.typography.bodySmall.fontSize};
+    font-weight: ${theme.typography.fontWeightMedium};
+    margin-bottom: ${theme.spacing(1)};
+    color: ${theme.colors.text.secondary};
+  `,
+  buttonGroup: css`
+    display: flex;
+    gap: ${theme.spacing(1)};
+    margin-bottom: ${theme.spacing(1)};
+  `,
+  sliderContainer: css`
+    margin-bottom: ${theme.spacing(1)};
+  `,
+  sliderLabel: css`
+    font-size: ${theme.typography.bodySmall.fontSize};
+    color: ${theme.colors.text.secondary};
+    margin-bottom: ${theme.spacing(0.5)};
+  `,
+});
+
+export const DragControls: React.FC<DragControlsProps> = ({
+  onToggleDragMode,
+  onResetPositions,
+  onTogglePhysics,
+  onForceStrengthChange,
+  onLinkDistanceChange,
+}) => {
+  const styles = useStyles2(getControlStyles);
+  const [dragMode, setDragMode] = useState(true);
+  const [physicsEnabled, setPhysicsEnabled] = useState(true);
+  const [forceStrength, setForceStrength] = useState(300);
+  const [linkDistance, setLinkDistance] = useState(120);
+
+  const handleDragModeToggle = (enabled: boolean) => {
+    setDragMode(enabled);
+    onToggleDragMode(enabled);
+  };
+
+  const handlePhysicsToggle = (enabled: boolean) => {
+    setPhysicsEnabled(enabled);
+    onTogglePhysics(enabled);
+  };
+
+  const handleForceStrengthChange = (value: number) => {
+    setForceStrength(value);
+    onForceStrengthChange(value);
+  };
+
+  const handleLinkDistanceChange = (value: number) => {
+    setLinkDistance(value);
+    onLinkDistanceChange(value);
+  };
+
+  return (
+    <div className={styles.controls}>
+      <div className={styles.title}>Drag Controls</div>
+      
+      <div className={styles.section}>
+        <Switch
+          label="Enable Dragging"
+          value={dragMode}
+          onChange={handleDragModeToggle}
+        />
+      </div>
+
+      <div className={styles.section}>
+        <Switch
+          label="Physics Simulation"
+          value={physicsEnabled}
+          onChange={handlePhysicsToggle}
+        />
+      </div>
+
+      <div className={styles.section}>
+        <div className={styles.buttonGroup}>
+          <Button size="sm" onClick={onResetPositions}>
+            Reset Positions
+          </Button>
+        </div>
+      </div>
+
+      {physicsEnabled && (
+        <>
+          <div className={styles.section}>
+            <div className={styles.sectionTitle}>Physics Settings</div>
+            
+            <div className={styles.sliderContainer}>
+              <div className={styles.sliderLabel}>
+                Force Strength: {forceStrength}
+              </div>
+              <Slider
+                min={50}
+                max={1000}
+                step={10}
+                value={forceStrength}
+                onChange={handleForceStrengthChange}
+              />
+            </div>
+
+            <div className={styles.sliderContainer}>
+              <div className={styles.sliderLabel}>
+                Link Distance: {linkDistance}
+              </div>
+              <Slider
+                min={50}
+                max={300}
+                step={5}
+                value={linkDistance}
+                onChange={handleLinkDistanceChange}
+              />
+            </div>
+          </div>
+        </>
+      )}
+
+      <div className={styles.section}>
+        <div className={styles.sectionTitle}>Instructions</div>
+        <ul style={{ fontSize: '11px', color: '#888', margin: 0, paddingLeft: '16px' }}>
+          <li>Click: Select node</li>
+          <li>Drag: Move node</li>
+          <li>Double-click: Pin/unpin</li>
+          <li>Right-click: Context menu</li>
+          <li>Mouse wheel: Zoom</li>
+          <li>Click + drag: Pan view</li>
+        </ul>
+      </div>
+    </div>
+  );
+};
+
+// File: src/components/EnhancedD3ServiceMapWithOptions.tsx
+import React, { useState, useCallback } from 'react';
+import { SceneComponentProps, SceneObjectBase, SceneObjectState } from '@grafana/scenes';
+import { ServiceMapData, D3Node } from '../types';
+import { ServiceMapDataProvider } from '../data/ServiceMapDataProvider';
+import { useStyles2, useTheme2 } from '@grafana/ui';
+import { getStyles } from '../styles/d3ServiceMapStyles';
+import { useD3ServiceMap } from '../hooks/useD3ServiceMap';
+import { ServiceNodeDetails } from './ServiceNodeDetails';
+import { ServiceMapLegend } from './ServiceMapLegend';
+import { NodeOptionsPanel } from './NodeOptionsPanel';
+import { DragControls } from './DragControls';
+import * as d3 from 'd3';
+
+interface EnhancedD3ServiceMapWithOptionsState extends SceneObjectState {
+  data?: ServiceMapData;
+  selectedNode?: string;
+  loading: boolean;
+  showNodeOptions: boolean;
+  dragMode: boolean;
+  physicsEnabled: boolean;
+}
+
+interface EnhancedD3ServiceMapWithOptionsProps {
+  dataProvider: ServiceMapDataProvider;
+}
+
+export class EnhancedD3ServiceMapWithOptions extends SceneObjectBase<EnhancedD3ServiceMapWithOptionsState> {
+  private dataProvider: ServiceMapDataProvider;
+  private simulationRef: React.MutableRefObject<d3.Simulation<D3Node, any> | null> = { current: null };
+
+  constructor(props: EnhancedD3ServiceMapWithOptionsProps) {
+    super({
+      loading: true,
+      showNodeOptions: false,
+      dragMode: true,
+      physicsEnabled: true,
+    });
+    this.dataProvider = props.dataProvider;
+  }
+
+  public static Component = ({ model }: SceneComponentProps<EnhancedD3ServiceMapWithOptions>) => {
+    const { data, loading, selectedNode, showNodeOptions, dragMode, physicsEnabled } = model.useState();
+    const theme = useTheme2();
+    const styles = useStyles2(getStyles);
+
+    const handleNodeClick = useCallback((nodeId: string) => {
+      model.setState({ selectedNode: nodeId });
+    }, [model]);
+
+    const handleBackgroundClick = useCallback(() => {
+      model.setState({ selectedNode: undefined, showNodeOptions: false });
+    }, [model]);
+
+    const handleNodeUpdate = useCallback((node: D3Node) => {
+      // Handle real-time node updates during drag
+      console.log('Node updated:', node.id, node.x, node.y);
+    }, []);
+
+    const handleNodeOptionsUpdate = useCallback((nodeId: string, updates: Partial<D3Node>) => {
+      if (!data) return;
+      
+      const updatedNodes = data.nodes.map(node => 
+        node.id === nodeId ? { ...node, ...updates } : node
+      );
+      
+      model.setState({
+        data: { ...data, nodes: updatedNodes },
+        showNodeOptions: false,
+      });
+    }, [data, model]);
+
+    const handleToggleDragMode = useCallback((enabled: boolean) => {
+      model.setState({ dragMode: enabled });
+      // Update drag behavior on nodes
+    }, [model]);
+
+    const handleResetPositions = useCallback(() => {
+      if (model.simulationRef?.current && data) {
+        // Reset all node positions and restart simulation
+        data.nodes.forEach(node => {
+          if ('fx' in node) node.fx = null;
+          if ('fy' in node) node.fy = null;
+          if ('pinned' in node) node.pinned = false;
+        });
+        
+        model.simulationRef.current.alphaTarget(0.3).restart();
+        setTimeout(() => {
+          if (model.simulationRef?.current) {
+            model.simulationRef.current.alphaTarget(0);
+          }
+        }, 1000);
+      }
+    }, [data, model]);
+
+    const handleTogglePhysics = useCallback((enabled: boolean) => {
+      model.setState({ physicsEnabled: enabled });
+      if (model.simulationRef?.current) {
+        if (enabled) {
+          model.simulationRef.current.alphaTarget(0.1).restart();
+        } else {
+          model.simulationRef.current.stop();
+        }
+      }
+    }, [model]);
+
+    const handleForceStrengthChange = useCallback((strength: number) => {
+      if (model.simulationRef?.current) {
+        model.simulationRef.current
+          .force('charge', d3.forceManyBody().strength(-strength))
+          .alphaTarget(0.1)
+          .restart();
+      }
+    }, [model]);
+
+    const handleLinkDistanceChange = useCallback((distance: number) => {
+      if (model.simulationRef?.current && data) {
+        const links = data.edges.map(d => ({
+          ...d,
+          source: data.nodes.find(n => n.id === (typeof d.source === 'string' ? d.source : d.source.id))!,
+          target: data.nodes.find(n => n.id === (typeof d.target === 'string' ? d.target : d.target.id))!,
+        }));
+        
+        model.simulationRef.current
+          .force('link', d3.forceLink(links).id((d: any) => d.id).distance(distance))
+          .alphaTarget(0.1)
+          .restart();
+      }
+    }, [data, model]);
+
+    const svgRef = useD3ServiceMap({
+      data: data!,
+      theme,
+      onNodeClick: handleNodeClick,
+      onBackgroundClick: handleBackgroundClick,
+      onNodeUpdate: handleNodeUpdate,
+    });
+
+    // Store simulation reference for controls
+    React.useEffect(() => {
+      // This would be set by the useD3ServiceMap hook
+      // model.simulationRef = simulationRef from hook
+    }, []);
+
+    React.useEffect(() => {
+      model.dataProvider.getData().then((serviceMapData) => {
+        model.setState({ data: serviceMapData, loading: false });
+      });
+
+      const interval = setInterval(() => {
+        model.dataProvider.getData().then((serviceMapData) => {
+          model.setState({ data: serviceMapData });
+        });
+      }, 10000);
+
+      return () => clearInterval(interval);
+    }, [model]);
+
+    if (loading) {
+      return <div className={styles.loading}>Loading enhanced D3 service map...</div>;
+    }
+
+    return (
+      <div className={styles.container}>
+        <svg ref={svgRef} className={styles.svg} width="100%" height="100%" />
+        
+        <DragControls
+          onToggleDragMode={handleToggleDragMode}
+          onResetPositions={handleResetPositions}
+          onTogglePhysics={handleTogglePhysics}
+          onForceStrengthChange={handleForceStrengthChange}
+          onLinkDistanceChange={handleLinkDistanceChange}
+        />
+
+        <div className={styles.controls}>
+          <button 
+            className={styles.controlButton}
+            onClick={() => {
+              const svg = d3.select(svgRef.current);
+              svg.transition().call(
+                d3.zoom<SVGSVGElement, unknown>().transform,
+                d3.zoomIdentity
+              );
+            }}
+          >
+            Reset View
+          </button>
+          
+          {selectedNode && (
+            <button 
+              className={styles.controlButton}
+              onClick={() => model.setState({ showNodeOptions: true })}
+            >
+              Node Options
+            </button>
+          )}
+        </div>
+
+        <ServiceMapLegend />
+
+        {selectedNode && data && !showNodeOptions && (
+          <ServiceNodeDetails
+            node={data.nodes.find(n => n.id === selectedNode)}
+            onClose={() => model.setState({ selectedNode: undefined })}
+          />
+        )}
+
+        {showNodeOptions && selectedNode && data && (
+          <NodeOptionsPanel
+            selectedNode={data.nodes.find(n => n.id === selectedNode)}
+            onNodeUpdate={handleNodeOptionsUpdate}
+            onClose={() => model.setState({ showNodeOptions: false })}
+          />
+        )}
+      </div>
+    );
+  };
+}
+
+// File: src/components/ServiceMapLegend.tsx
+import React from 'react';
+import { css } from '@emotion/css';
+import { GrafanaTheme2 } from '@grafana/data';
+import { useStyles2 } from '@grafana/ui';
+import { getNodeColor, getStatusColor } from '../utils/d3Utils';
+
+const getLegendStyles = (theme: GrafanaTheme2) => ({
+  legend: css`
+    position: absolute;
+    bottom: ${theme.spacing(2)};
+    left: ${theme.spacing(2)};
+    background: ${theme.colors.background.secondary};
+    border: 1px solid ${theme.colors.border.medium};
+    border-radius: ${theme.shape.borderRadius()};
+    padding: ${theme.spacing(2)};
+    z-index: 1000;
+    min-width: 220px;
+    max-height: 400px;
+    overflow-y: auto;
+  `,
+  section: css`
+    margin-bottom: ${theme.spacing(2)};
+    
+    &:last-child {
+      margin-bottom: 0;
+    }
+  `,
+  title: css`
+    font-weight: ${theme.typography.fontWeightMedium};
+    margin-bottom: ${theme.spacing(1)};
+    color: ${theme.colors.text.primary};
+    font-size: ${theme.typography.body.fontSize};
+  `,
+  item: css`
+    display: flex;
+    align-items: center;
+    margin-bottom: ${theme.spacing(0.5)};
+    font-size: ${theme.typography.bodySmall.fontSize};
+    color: ${theme.colors.text.secondary};
+  `,
+  colorIndicator: css`
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: ${theme.spacing(1)};
+    flex-shrink: 0;
+  `,
+  shapeIndicator: css`
+    width: 16px;
+    height: 16px;
+    margin-right: ${theme.spacing(1)};
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  `,
+  interactionHint: css`
+    font-style: italic;
+    font-size: ${theme.typography.caption.fontSize};
+    color: ${theme.colors.text.disabled};
+  `,
+});
+
+export const ServiceMapLegend: React.FC = () => {
+  const styles = useStyles2(getLegendStyles);
+
+  const nodeTypes = [
+    { type: 'service', label: 'Service', shape: '●' },
+    { type: 'database', label: 'Database', shape: '■' },
+    { type: 'external', label: 'External API', shape: '◆' },
+    { type: 'frontend', label: 'Frontend', shape: '▲' },
+    { type: 'cache', label: 'Cache', shape: '◆' },
+    { type: 'queue', label: 'Message Queue', shape: '⬡' },
+  ];
+
+  const statusTypes = [
+    { status: 'healthy', label: 'Healthy' },
+    { status: 'warning', label: 'Warning' },
+    { status: 'critical', label: 'Critical' },
+  ];
+
+  const sizeTypes = [
+    { size: 'small', label: 'Small Node', indicator: '●' },
+    { size: 'medium', label: 'Medium Node', indicator: '●' },
+    { size: 'large', label: 'Large Node', indicator: '●' },
+    { size: 'xlarge', label: 'XL Node', indicator: '●' },
+  ];
+
+  return (
+    <div className={styles.legend}>
+      <div className={styles.section}>
+        <div className={styles.title}>Node Types</div>
+        {nodeTypes.map(({ type, label, shape }) => (
+          <div key={type} className={styles.item}>
+            <div 
+              className={styles.shapeIndicator}
+              style={{ color: getNodeColor(type) }}
+            >
+              {shape}
+            </div>
+            {label}
+          </div>
+        ))}
+      </div>
+      
+      <div className={styles.section}>
+        <div className={styles.title}>Health Status</div>
+        {statusTypes.map(({ status, label }) => (
+          <div key={status} className={styles.item}>
+            <div 
+              className={styles.colorIndicator}
+              style={{ backgroundColor: getStatusColor(status) }}
+            />
+            {label}
+          </div>
+        ))}
+      </div>
+
+      <div className={styles.section}>
+        <div className={styles.title}>Node Sizes</div>
+        {sizeTypes.map(({ size, label, indicator }) => (
+          <div key={size} className={styles.item}>
+            <div 
+              className={styles.shapeIndicator}
+              style={{ 
+                fontSize: size === 'small' ? '8px' : 
+                         size === 'medium' ? '12px' : 
+                         size === 'large' ? '16px' : '20px'
+              }}
+            >
+              {indicator}
+            </div>
+            {label}
+          </div>
+        ))}
+      </div>
+
+      <div className={styles.section}>
+        <div className={styles.title}>Interactions</div>
+        <div className={styles.interactionHint}>
+          • Click: Select node<br/>
+          • Drag: Move node<br/>
+          • Double-click: Pin/unpin<br/>
+          • Right-click: Options<br/>
+          • Wheel: Zoom<br/>
+          • Shift+drag: Pan view
+        </div>
+      </div>
+    </div>
+  );
+};// File: src/hooks/useD3ServiceMap.ts
+import { useEffect, useRef } from 'react';
+import * as d3 from 'd3';
+import { ServiceMapData, D3Node, D3Link } from '../types';
+import { GrafanaTheme2 } from '@grafana/data';
+import { 
+  getStatusColor, 
+  getNodeColor, 
+  getNodeRadius, 
+  drawNodeShape, 
+  getNodeIcon, 
+  createDragBehavior,
+  getGroupColor 
+} from '../utils/d3Utils';
+
+interface UseD3ServiceMapProps {
+  data: ServiceMapData;
+  theme: GrafanaTheme2;
+  onNodeClick: (nodeId: string) => void;
+  onBackgroundClick: () => void;
+  onNodeUpdate?: (node: D3Node) => void;
+}
+
+export const useD3ServiceMap = ({
+  data,
+  theme,
+  onNodeClick,
+  onBackgroundClick,
+  onNodeUpdate,
+}: UseD3ServiceMapProps) => {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);
+
+  useEffect(() => {
+    if (!data || !svgRef.current) return;
+
+    const svg = d3.select(svgRef.current);
+    const container = svgRef.current.parentElement;
+    if (!container) return;
+
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+
+    // Clear previous content
+    svg.selectAll('*').remove();
+
+    // Create main group for zooming and panning
+    const g = svg.append('g').attr('class', 'main-group');
+
+    // Set up zoom behavior with enhanced options
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.1, 5])
+      .filter((event) => {
+        // Allow zoom with wheel, pan with middle mouse or ctrl+drag
+        return !event.ctrlKey && !event.button;
+      })
+      .on('zoom', (event) => {
+        g.attr('transform', event.transform);
+      });
+
+    svg.call(zoom);
+
+    // Prepare data with enhanced node properties
+    const nodes: D3Node[] = data.nodes.map(d => ({ 
+      ...d,
+      selected: false,
+      isDragging: false,
+    }));
+    
+    const links: D3Link[] = data.edges.map(d => ({
+      ...d,
+      source: nodes.find(n => n.id === (typeof d.source === 'string' ? d.source : d.source.id))!,
+      target: nodes.find(n => n.id === (typeof d.target === 'string' ? d.target : d.target.id))!,
+      value: d.metrics.requestRate,
+    }));
+
+    // Create force simulation with enhanced forces
+    const simulation = d3.forceSimulation<D3Node>(nodes)
+      .force('link', d3.forceLink<D3Node, D3Link>(links)
+        .id(d => d.id)
+        .distance(d => {
+          // Variable link distance based on node importance
+          const sourceRadius = getNodeRadius(d.source);
+          const targetRadius = getNodeRadius(d.target);
+          return 80 + sourceRadius + targetRadius;
+        })
+        .strength(0.8)
+      )
+      .force('charge', d3.forceManyBody()
+        .strength(d => {
+          // Stronger repulsion for larger nodes
+          const radius = getNodeRadius(d);
+          return -300 - (radius * 10);
+        })
+      )
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collision', d3.forceCollide()
+        .radius(d => getNodeRadius(d) + 10)
+        .strength(0.9)
+      )
+      // Add boundaries to keep nodes in view
+      .force('boundary', () => {
+        nodes.forEach(d => {
+          const radius = getNodeRadius(d);
+          d.x = Math.max(radius, Math.min(width - radius, d.x || 0));
+          d.y = Math.max(radius, Math.min(height - radius, d.y || 0));
+        });
+      });
+
+    simulationRef.current = simulation;
+
+    // Create group backgrounds for node grouping
+    const groups = [...new Set(nodes.map(n => n.group).filter(Boolean))];
+    if (groups.length > 0) {
+      const groupLayer = g.append('g').attr('class', 'groups');
+      
+      groups.forEach(groupName => {
+        const groupNodes = nodes.filter(n => n.group === groupName);
+        if (groupNodes.length > 1) {
+          groupLayer.append('g')
+            .attr('class', `group-${groupName}`)
+            .style('opacity', 0.1);
+        }
+      });
+    }
+
+    // Create enhanced arrow markers
+    const defs = svg.append('defs');
+    ['healthy', 'warning', 'critical'].forEach(status => {
+      // Regular arrows
+      defs.append('marker')
+        .attr('id', `arrow-${status}`)
+        .attr('viewBox', '0 -5 10 10')
+        .attr('refX', 35)
+        .attr('refY', 0)
+        .attr('markerWidth', 8)
+        .attr('markerHeight', 8)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M0,-5L10,0L0,5')
+        .attr('fill', getStatusColor(status));
+
+      //// File: package.json
+{
+  "name": "grafana-scenes-d3-servicemap-app",
+  "version": "1.0.0",
+  "description": "Grafana Scenes App with D3.js Service Map",
+  "main": "dist/module.js",
+  "scripts": {
+    "build": "grafana-toolkit plugin:build",
+    "dev": "grafana-toolkit plugin:dev",
+    "test": "grafana-toolkit plugin:test",
+    "sign": "grafana-toolkit plugin:sign",
+    "clean": "rimraf dist coverage"
+  },
+  "dependencies": {
+    "@grafana/data": "latest",
+    "@grafana/runtime": "latest",
+    "@grafana/scenes": "latest",
+    "@grafana/ui": "latest",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "d3": "^7.8.0",
+    "d3-force": "^3.0.0",
+    "d3-selection": "^3.0.0",
+    "d3-zoom": "^3.0.0",
+    "d3-drag": "^3.0.0",
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "@grafana/toolkit": "latest",
+    "@types/react": "^18.0.0",
+    "@types/d3": "^7.4.0",
+    "typescript": "^4.9.0"
+  }
+}
+
+// File: src/plugin.json
+{
+  "type": "app",
+  "name": "D3 Service Map Scenes App",
+  "id": "d3-servicemap-scenes-app",
+  "info": {
+    "description": "Service map visualization using D3.js and Grafana Scenes",
+    "author": {
+      "name": "Your Name"
+    },
+    "keywords": ["scenes", "d3", "servicemap", "observability"],
+    "version": "1.0.0",
+    "updated": "2025-01-01"
+  },
+  "includes": [
+    {
+      "type": "page",
+      "name": "D3 Service Map",
+      "path": "/a/d3-servicemap-scenes-app",
+      "role": "Viewer",
+      "addToNav": true
+    }
+  ],
+  "dependencies": {
+    "grafanaVersion": "9.0.0"
+  }
+}
+
+// File: src/module.ts
+import { AppPlugin } from '@grafana/data';
+import { AppConfig } from './types';
+import { ServiceMapApp } from './components/ServiceMapApp';
+
+export const plugin = new AppPlugin<AppConfig>().setRootPage(ServiceMapApp);
+
+// File: src/types.ts
+export interface AppConfig {
+  // Add any app-level configuration here
+}
+
+export interface ServiceNode {
+  id: string;
+  name: string;
+  type: 'service' | 'database' | 'external' | 'frontend' | 'cache' | 'queue';
+  status: 'healthy' | 'warning' | 'critical' | 'unknown';
+  metrics: {
+    requestRate: number;
+    errorRate: number;
+    latency: number;
+    cpu?: number;
+    memory?: number;
+  };
+  position?: {
+    x: number;
+    y: number;
+  };
+  fx?: number; // Fixed x position for D3
+  fy?: number; // Fixed y position for D3
+  vx?: number; // Velocity x for D3
+  vy?: number; // Velocity y for D3
+  // Enhanced node options
+  size?: 'small' | 'medium' | 'large' | 'xlarge';
+  shape?: 'circle' | 'square' | 'diamond' | 'hexagon' | 'triangle';
+  color?: string; // Custom color override
+  icon?: string; // Icon identifier
+  layer?: number; // Z-index layer
+  draggable?: boolean; // Whether node can be dragged
+  pinned?: boolean; // Whether node is pinned in place
+  highlighted?: boolean; // Whether node is highlighted
+  group?: string; // Node grouping identifier
+  metadata?: Record<string, any>; // Additional metadata
+}
+
+export interface ServiceEdge {
+  id: string;
+  source: string | ServiceNode;
+  target: string | ServiceNode;
+  metrics: {
+    requestRate: number;
+    errorRate: number;
+    latency: number;
+  };
+  status: 'healthy' | 'warning' | 'critical';
+  value?: number; // Edge weight for visualization
+}
+
+export interface ServiceMapData {
+  nodes: ServiceNode[];
+  edges: ServiceEdge[];
+  timestamp: number;
+}
+
+export interface D3Node extends ServiceNode {
+  x?: number;
+  y?: number;
+  fx?: number | null;
+  fy?: number | null;
+  vx?: number;
+  vy?: number;
+  // Enhanced D3 node properties
+  isDragging?: boolean;
+  dragStartTime?: number;
+  originalPosition?: { x: number; y: number };
+  locked?: boolean; // Prevents automatic positioning
+  selected?: boolean;
+}
+
+export interface D3Link extends ServiceEdge {
+  source: D3Node;
+  target: D3Node;
+}
+
+// File: src/components/ServiceMapApp.tsx
+import React from 'react';
+import { PluginPage } from '@grafana/runtime';
+import { ServiceMapScene } from './ServiceMapScene';
+
+export function ServiceMapApp() {
+  return (
+    <PluginPage>
+      <ServiceMapScene />
+    </PluginPage>
+  );
+}
+
+// File: src/components/ServiceMapScene.tsx
+import React, { useMemo } from 'react';
+import {
+  SceneApp,
+  SceneAppPage,
+  SceneFlexLayout,
+  SceneFlexItem,
+  EmbeddedScene,
+  SceneControlsSpacer,
+  SceneRefreshPicker,
+  SceneTimePicker,
+  VariableValueSelectors,
+} from '@grafana/scenes';
+import { D3ServiceMapVisualization } from './D3ServiceMapVisualization';
+import { ServiceMapDataProvider } from '../data/ServiceMapDataProvider';
+
+export function ServiceMapScene() {
+  const scene = useMemo(() => {
+    const dataProvider = new ServiceMapDataProvider();
+
+    return new SceneApp({
+      pages: [
+        new SceneAppPage({
+          title: 'D3 Service Map',
+          url: '/d3-servicemap',
+          getScene: () => {
+            return new EmbeddedScene({
+              controls: [
+                new VariableValueSelectors({}),
+                new SceneControlsSpacer(),
+                new SceneTimePicker({ isOnCanvas: true }),
+                new SceneRefreshPicker({
+                  intervals: ['5s', '10s', '30s', '1m', '5m', '15m'],
+                  isOnCanvas: true,
+                }),
+              ],
+              body: new SceneFlexLayout({
+                direction: 'column',
+                children: [
+                  new SceneFlexItem({
+                    minHeight: 700,
+                    body: new D3ServiceMapVisualization({
+                      dataProvider,
+                    }),
+                  }),
+                ],
+              }),
+            });
+          },
+        }),
+      ],
+    });
+  }, []);
+
+  return <scene.Component model={scene} />;
+}
+
+// File: src/components/D3ServiceMapVisualization.tsx
+import React, { useEffect, useRef, useState } from 'react';
+import { SceneComponentProps, SceneObjectBase, SceneObjectState } from '@grafana/scenes';
+import { ServiceMapData, D3Node, D3Link } from '../types';
+import { ServiceMapDataProvider } from '../data/ServiceMapDataProvider';
+import * as d3 from 'd3';
+import { css } from '@emotion/css';
+import { GrafanaTheme2 } from '@grafana/data';
+import { useStyles2, useTheme2 } from '@grafana/ui';
+import { ServiceNodeDetails } from './ServiceNodeDetails';
+import { getStatusColor, getNodeColor } from '../utils/d3Utils';
+
+interface D3ServiceMapVisualizationState extends SceneObjectState {
+  data?: ServiceMapData;
+  selectedNode?: string;
+  loading: boolean;
+}
+
+interface D3ServiceMapVisualizationProps {
+  dataProvider: ServiceMapDataProvider;
+}
+
+export class D3ServiceMapVisualization extends SceneObjectBase<D3ServiceMapVisualizationState> {
+  private dataProvider: ServiceMapDataProvider;
+
+  constructor(props: D3ServiceMapVisualizationProps) {
+    super({
+      loading: true,
+    });
+    this.dataProvider = props.dataProvider;
+  }
+
+  public static Component = ({ model }: SceneComponentProps<D3ServiceMapVisualization>) => {
+    const { data, loading, selectedNode } = model.useState();
+    const svgRef = useRef<SVGSVGElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const theme = useTheme2();
+    const styles = useStyles2(getStyles);
+
+    useEffect(() => {
+      // Load initial data
+      model.dataProvider.getData().then((serviceMapData) => {
+        model.setState({ data: serviceMapData, loading: false });
+      });
+
+      // Set up data refresh interval
+      const interval = setInterval(() => {
+        model.dataProvider.getData().then((serviceMapData) => {
+          model.setState({ data: serviceMapData });
+        });
+      }, 10000); // Refresh every 10 seconds
+
+      return () => clearInterval(interval);
+    }, [model]);
+
+    useEffect(() => {
+      if (!data || !svgRef.current || loading) {
+        return;
+      }
+
+      const svg = d3.select(svgRef.current);
+      const container = containerRef.current;
+      if (!container) return;
+
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+
+      // Clear previous content
+      svg.selectAll('*').remove();
+
+      // Create main group for zooming and panning
+      const g = svg.append('g').attr('class', 'main-group');
+
+      // Set up zoom behavior
+      const zoom = d3.zoom<SVGSVGElement, unknown>()
+        .scaleExtent([0.1, 4])
+        .on('zoom', (event) => {
+          g.attr('transform', event.transform);
+        });
+
+      svg.call(zoom);
+
+      // Prepare data
+      const nodes: D3Node[] = data.nodes.map(d => ({ ...d }));
+      const links: D3Link[] = data.edges.map(d => ({ 
+        ...d,
+        source: nodes.find(n => n.id === (typeof d.source === 'string' ? d.source : d.source.id))!,
+        target: nodes.find(n => n.id === (typeof d.target === 'string' ? d.target : d.target.id))!,
+        value: d.metrics.requestRate
+      }));
+
+      // Create force simulation
+      const simulation = d3.forceSimulation<D3Node>(nodes)
+        .force('link', d3.forceLink<D3Node, D3Link>(links).id(d => d.id).distance(150))
+        .force('charge', d3.forceManyBody().strength(-300))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collision', d3.forceCollide().radius(50));
+
+      // Create arrow markers for edges
+      const defs = svg.append('defs');
+      
+      ['healthy', 'warning', 'critical'].forEach(status => {
+        defs.append('marker')
+          .attr('id', `arrow-${status}`)
+          .attr('viewBox', '0 -5 10 10')
+          .attr('refX', 25)
+          .attr('refY', 0)
+          .attr('markerWidth', 6)
+          .attr('markerHeight', 6)
+          .attr('orient', 'auto')
+          .append('path')
+          .attr('d', 'M0,-5L10,0L0,5')
+          .attr('fill', getStatusColor(status));
+      });
+
+      // Create links
+      const link = g.append('g')
+        .selectAll('line')
+        .data(links)
+        .enter().append('line')
+        .attr('class', 'link')
+        .attr('stroke', d => getStatusColor(d.status))
+        .attr('stroke-width', d => Math.max(1, Math.sqrt(d.value || 1) / 2))
+        .attr('marker-end', d => `url(#arrow-${d.status})`)
+        .style('opacity', 0.8);
+
+      // Create link labels for metrics
+      const linkLabels = g.append('g')
+        .selectAll('text')
+        .data(links)
+        .enter().append('text')
+        .attr('class', 'link-label')
+        .attr('text-anchor', 'middle')
+        .attr('font-size', '10px')
+        .attr('fill', theme.colors.text.secondary)
+        .text(d => `${d.metrics.requestRate.toFixed(1)} req/s`);
+
+      // Create nodes
+      const node = g.append('g')
+        .selectAll('g')
+        .data(nodes)
+        .enter().append('g')
+        .attr('class', 'node')
+        .style('cursor', 'pointer')
+        .call(d3.drag<SVGGElement, D3Node>()
+          .on('start', (event, d) => {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+          })
+          .on('drag', (event, d) => {
+            d.fx = event.x;
+            d.fy = event.y;
+          })
+          .on('end', (event, d) => {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+          }));
+
+      // Add circles for nodes
+      node.append('circle')
+        .attr('r', d => {
+          const baseRadius = 20;
+          const sizeMultiplier = Math.sqrt(d.metrics.requestRate) / 10;
+          return baseRadius + sizeMultiplier;
+        })
+        .attr('fill', d => getNodeColor(d.type))
+        .attr('stroke', d => getStatusColor(d.status))
+        .attr('stroke-width', 3);
+
+      // Add node labels
+      node.append('text')
+        .attr('dx', 0)
+        .attr('dy', -30)
+        .attr('text-anchor', 'middle')
+        .attr('font-size', '12px')
+        .attr('font-weight', 'bold')
+        .attr('fill', theme.colors.text.primary)
+        .text(d => d.name);
+
+      // Add metrics text below nodes
+      node.append('text')
+        .attr('dx', 0)
+        .attr('dy', 35)
+        .attr('text-anchor', 'middle')
+        .attr('font-size', '10px')
+        .attr('fill', theme.colors.text.secondary)
+        .text(d => `${d.metrics.latency}ms | ${d.metrics.errorRate}%`);
+
+      // Add click handler for nodes
+      node.on('click', (event, d) => {
+        event.stopPropagation();
+        model.setState({ selectedNode: d.id });
+        
+        // Highlight connected nodes and links
+        highlightConnections(d.id, nodes, links, node, link);
+      });
+
+      // Clear selection when clicking on empty space
+      svg.on('click', () => {
+        model.setState({ selectedNode: undefined });
+        clearHighlights(node, link);
+      });
+
+      // Update positions on simulation tick
+      simulation.on('tick', () => {
+        link
+          .attr('x1', d => d.source.x!)
+          .attr('y1', d => d.source.y!)
+          .attr('x2', d => d.target.x!)
+          .attr('y2', d => d.target.y!);
+
+        linkLabels
+          .attr('x', d => (d.source.x! + d.target.x!) / 2)
+          .attr('y', d => (d.source.y! + d.target.y!) / 2);
+
+        node.attr('transform', d => `translate(${d.x},${d.y})`);
+      });
+
+      // Helper functions
+      function highlightConnections(nodeId: string, nodes: D3Node[], links: D3Link[], nodeSelection: any, linkSelection: any) {
+        const connectedNodeIds = new Set<string>();
+        connectedNodeIds.add(nodeId);
+
+        links.forEach(link => {
+          if (link.source.id === nodeId || link.target.id === nodeId) {
+            connectedNodeIds.add(link.source.id);
+            connectedNodeIds.add(link.target.id);
+          }
+        });
+
+        nodeSelection
+          .style('opacity', (d: D3Node) => connectedNodeIds.has(d.id) ? 1 : 0.3);
+
+        linkSelection
+          .style('opacity', (d: D3Link) => 
+            d.source.id === nodeId || d.target.id === nodeId ? 1 : 0.1);
+      }
+
+      function clearHighlights(nodeSelection: any, linkSelection: any) {
+        nodeSelection.style('opacity', 1);
+        linkSelection.style('opacity', 0.8);
+      }
+
+      // Cleanup function
+      return () => {
+        simulation.stop();
+      };
+    }, [data, loading, theme]);
+
+    if (loading) {
+      return <div className={styles.loading}>Loading D3 service map...</div>;
+    }
+
+    return (
+      <div className={styles.container} ref={containerRef}>
+        <svg
+          ref={svgRef}
+          className={styles.svg}
+          width="100%"
+          height="100%"
+        />
+        <div className={styles.controls}>
+          <button 
+            className={styles.controlButton}
+            onClick={() => {
+              const svg = d3.select(svgRef.current);
+              svg.transition().call(
+                d3.zoom<SVGSVGElement, unknown>().transform,
+                d3.zoomIdentity
+              );
+            }}
+          >
+            Reset Zoom
+          </button>
+        </div>
+        {selectedNode && data && (
+          <ServiceNodeDetails
+            node={data.nodes.find(n => n.id === selectedNode)}
+            onClose={() => model.setState({ selectedNode: undefined })}
+          />
+        )}
+      </div>
+    );
+  };
+}
+
+// File: src/components/ServiceNodeDetails.tsx
+import React from 'react';
+import { ServiceNode } from '../types';
+import { Modal, Button } from '@grafana/ui';
+import { getStatusColor } from '../utils/d3Utils';
+import { css } from '@emotion/css';
+import { GrafanaTheme2 } from '@grafana/data';
+import { useStyles2 } from '@grafana/ui';
+
+interface ServiceNodeDetailsProps {
+  node?: ServiceNode;
+  onClose: () => void;
+}
+
+const getDetailStyles = (theme: GrafanaTheme2) => ({
+  container: css`
+    padding: ${theme.spacing(2)};
+  `,
+  section: css`
+    margin-bottom: ${theme.spacing(2)};
+  `,
+  title: css`
+    font-size: ${theme.typography.h4.fontSize};
+    margin-bottom: ${theme.spacing(1)};
+  `,
+  status: css`
+    display: inline-block;
+    padding: ${theme.spacing(0.5, 1)};
+    border-radius: ${theme.shape.borderRadius()};
+    font-weight: ${theme.typography.fontWeightMedium};
+    text-transform: uppercase;
+    font-size: ${theme.typography.bodySmall.fontSize};
+  `,
+  metricsGrid: css`
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: ${theme.spacing(2)};
+    margin-top: ${theme.spacing(2)};
+  `,
+  metric: css`
+    padding: ${theme.spacing(2)};
+    background: ${theme.colors.background.secondary};
+    border-radius: ${theme.shape.borderRadius()};
+    border: 1px solid ${theme.colors.border.medium};
+  `,
+  metricLabel: css`
+    font-size: ${theme.typography.bodySmall.fontSize};
+    color: ${theme.colors.text.secondary};
+    margin-bottom: ${theme.spacing(0.5)};
+  `,
+  metricValue: css`
+    font-size: ${theme.typography.h3.fontSize};
+    font-weight: ${theme.typography.fontWeightMedium};
+    color: ${theme.colors.text.primary};
+  `,
+  metricUnit: css`
+    font-size: ${theme.typography.bodySmall.fontSize};
+    color: ${theme.colors.text.secondary};
+    margin-left: ${theme.spacing(0.5)};
+  `,
+});
+
+export const ServiceNodeDetails: React.FC<ServiceNodeDetailsProps> = ({ node, onClose }) => {
+  const styles = useStyles2(getDetailStyles);
+
+  if (!node) return null;
+
+  const statusColor = getStatusColor(node.status);
+
+  return (
+    <Modal title={`Service Details: ${node.name}`} isOpen={true} onDismiss={onClose}>
+      <div className={styles.container}>
+        <div className={styles.section}>
+          <div className={styles.title}>{node.name}</div>
+          <p><strong>Type:</strong> {node.type}</p>
+          <p>
+            <strong>Status:</strong>{' '}
+            <span 
+              className={styles.status}
+              style={{ 
+                backgroundColor: statusColor + '20', 
+                color: statusColor,
+                border: `1px solid ${statusColor}`
+              }}
+            >
+              {node.status}
+            </span>
+          </p>
+        </div>
+
+        <div className={styles.section}>
+          <h4>Performance Metrics</h4>
+          <div className={styles.metricsGrid}>
+            <div className={styles.metric}>
+              <div className={styles.metricLabel}>Request Rate</div>
+              <div className={styles.metricValue}>
+                {node.metrics.requestRate.toFixed(1)}
+                <span className={styles.metricUnit}>req/s</span>
+              </div>
+            </div>
+            
+            <div className={styles.metric}>
+              <div className={styles.metricLabel}>Error Rate</div>
+              <div className={styles.metricValue}>
+                {node.metrics.errorRate.toFixed(2)}
+                <span className={styles.metricUnit}>%</span>
+              </div>
+            </div>
+            
+            <div className={styles.metric}>
+              <div className={styles.metricLabel}>Latency</div>
+              <div className={styles.metricValue}>
+                {node.metrics.latency}
+                <span className={styles.metricUnit}>ms</span>
+              </div>
+            </div>
+
+            {node.metrics.cpu && (
+              <div className={styles.metric}>
+                <div className={styles.metricLabel}>CPU Usage</div>
+                <div className={styles.metricValue}>
+                  {node.metrics.cpu.toFixed(1)}
+                  <span className={styles.metricUnit}>%</span>
+                </div>
+              </div>
+            )}
+
+            {node.metrics.memory && (
+              <div className={styles.metric}>
+                <div className={styles.metricLabel}>Memory Usage</div>
+                <div className={styles.metricValue}>
+                  {node.metrics.memory.toFixed(1)}
+                  <span className={styles.metricUnit}>%</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <Button onClick={onClose} style={{ marginTop: '16px' }}>
+          Close
+        </Button>
+      </div>
+    </Modal>
+  );
+};
+
+// File: src/data/ServiceMapDataProvider.ts
+import { ServiceMapData, ServiceNode, ServiceEdge } from '../types';
+
+export class ServiceMapDataProvider {
+  async getData(): Promise<ServiceMapData> {
+    // In a real implementation, this would fetch from your observability backend
+    // For demo purposes, returning mock data with more variety
+    return this.getMockData();
+  }
+
+  private getMockData(): ServiceMapData {
+    const nodes: ServiceNode[] = [
+      {
+        id: 'user-postgres',
+        source: 'user-service',
+        target: 'postgres-db',
+        status: 'healthy',
+        metrics: { requestRate: 45.8, errorRate: 0.1, latency: 12 },
+      },
+      {
+        id: 'order-postgres',
+        source: 'order-service',
+        target: 'postgres-db',
+        status: 'healthy',
+        metrics: { requestRate: 89.2, errorRate: 0.1, latency: 15 },
+      },
+      {
+        id: 'order-mongodb',
+        source: 'order-service',
+        target: 'mongodb',
+        status: 'warning',
+        metrics: { requestRate: 67.4, errorRate: 1.2, latency: 45 },
+      },
+      {
+        id: 'notification-queue',
+        source: 'notification-service',
+        target: 'rabbitmq',
+        status: 'healthy',
+        metrics: { requestRate: 45.9, errorRate: 0.2, latency: 8 },
+      },
+      {
+        id: 'payment-external',
+        source: 'payment-service',
+        target: 'external-payment-api',
+        status: 'warning',
+        metrics: { requestRate: 23.4, errorRate: 4.7, latency: 189 },
+      },
+      {
+        id: 'notification-email',
+        source: 'notification-service',
+        target: 'external-email-api',
+        status: 'healthy',
+        metrics: { requestRate: 15.8, errorRate: 1.1, latency: 156 },
+      },
+    ];
+
+    return {
+      nodes,
+      edges,
+      timestamp: Date.now(),
+    };
+  }
+}
+
+// File: src/utils/d3Utils.ts
+export function getStatusColor(status: string): string {
+  switch (status) {
+    case 'healthy':
+      return '#52c41a';
+    case 'warning':
+      return '#faad14';
+    case 'critical':
+      return '#f5222d';
+    default:
+      return '#8c8c8c';
+  }
+}
+
+export function getNodeColor(type: string): string {
+  switch (type) {
+    case 'service':
+      return '#1f77b4';
+    case 'database':
+      return '#ff7f0e';
+    case 'external':
+      return '#2ca02c';
+    case 'frontend':
+      return '#d62728';
+    case 'cache':
+      return '#9467bd';
+    case 'queue':
+      return '#8c564b';
+    default:
+      return '#7f7f7f';
+  }
+}
+
+export function getNodeShape(type: string): string {
+  switch (type) {
+    case 'service':
+      return 'circle';
+    case 'database':
+      return 'rect';
+    case 'external':
+      return 'diamond';
+    case 'frontend':
+      return 'triangle';
+    case 'cache':
+      return 'ellipse';
+    case 'queue':
+      return 'hexagon';
+    default:
+      return 'circle';
+  }
+}
+
+// Enhanced node sizing based on multiple factors
+export function getNodeRadius(node: any): number {
+  const baseRadius = 20;
+  
+  // Size multiplier based on explicit size setting
+  let sizeMultiplier = 1;
+  switch (node.size) {
+    case 'small':
+      sizeMultiplier = 0.7;
+      break;
+    case 'medium':
+      sizeMultiplier = 1.0;
+      break;
+    case 'large':
+      sizeMultiplier = 1.4;
+      break;
+    case 'xlarge':
+      sizeMultiplier = 1.8;
+      break;
+    default:
+      // Auto-size based on metrics if no explicit size
+      sizeMultiplier = 1 + Math.log(node.metrics.requestRate + 1) / 10;
+  }
+  
+  return Math.min(baseRadius * sizeMultiplier, 50);
+}
+
+// Enhanced shape drawing functions
+export function drawNodeShape(selection: any, shape: string) {
+  selection.selectAll('*').remove(); // Clear existing shapes
+  
+  switch (shape) {
+    case 'circle':
+      return selection.append('circle');
+    case 'square':
+      return selection.append('rect')
+        .attr('width', d => getNodeRadius(d) * 1.6)
+        .attr('height', d => getNodeRadius(d) * 1.6)
+        .attr('x', d => -getNodeRadius(d) * 0.8)
+        .attr('y', d => -getNodeRadius(d) * 0.8)
+        .attr('rx', 4);
+    case 'diamond':
+      return selection.append('polygon')
+        .attr('points', d => {
+          const r = getNodeRadius(d);
+          return `0,${-r} ${r},0 0,${r} ${-r},0`;
+        });
+    case 'hexagon':
+      return selection.append('polygon')
+        .attr('points', d => {
+          const r = getNodeRadius(d);
+          const points = [];
+          for (let i = 0; i < 6; i++) {
+            const angle = (i * Math.PI) / 3;
+            const x = r * Math.cos(angle);
+            const y = r * Math.sin(angle);
+            points.push(`${x},${y}`);
+          }
+          return points.join(' ');
+        });
+    case 'triangle':
+      return selection.append('polygon')
+        .attr('points', d => {
+          const r = getNodeRadius(d);
+          return `0,${-r} ${r * 0.866},${r * 0.5} ${-r * 0.866},${r * 0.5}`;
+        });
+    default:
+      return selection.append('circle');
+  }
+}
+
+// Node icons mapping
+export function getNodeIcon(type: string): string {
+  switch (type) {
+    case 'service':
+      return '⚙️';
+    case 'database':
+      return '🗄️';
+    case 'external':
+      return '🌐';
+    case 'frontend':
+      return '💻';
+    case 'cache':
+      return '⚡';
+    case 'queue':
+      return '📊';
+    default:
+      return '❓';
+  }
+}
+
+// Drag behavior utilities
+export function createDragBehavior(simulation: any, onNodeUpdate?: (node: any) => void) {
+  return d3.drag()
+    .on('start', function(event, d) {
+      // Enhanced drag start with visual feedback
+      d.isDragging = true;
+      d.dragStartTime = Date.now();
+      d.originalPosition = { x: d.x, y: d.y };
+      
+      // Stop simulation if not already active
+      if (!event.active) simulation.alphaTarget(0.3).restart();
+      
+      // Fix node position
+      d.fx = d.x;
+      d.fy = d.y;
+      
+      // Add dragging visual state
+      d3.select(this)
+        .classed('dragging', true)
+        .style('cursor', 'grabbing');
+      
+      // Raise node to top layer
+      d3.select(this.parentNode).raise();
+    })
+    .on('drag', function(event, d) {
+      // Update position with constraints
+      const container = d3.select(this).node().closest('svg');
+      const containerRect = container.getBoundingClientRect();
+      const nodeRadius = getNodeRadius(d);
+      
+      // Constrain to container bounds
+      d.fx = Math.max(nodeRadius, Math.min(containerRect.width - nodeRadius, event.x));
+      d.fy = Math.max(nodeRadius, Math.min(containerRect.height - nodeRadius, event.y));
+      
+      // Optional callback for real-time updates
+      if (onNodeUpdate) {
+        onNodeUpdate(d);
+      }
+    })
+    .on('end', function(event, d) {
+      // Enhanced drag end behavior
+      const dragDuration = Date.now() - (d.dragStartTime || 0);
+      const dragDistance = Math.sqrt(
+        Math.pow((d.x || 0) - (d.originalPosition?.x || 0), 2) +
+        Math.pow((d.y || 0) - (d.originalPosition?.y || 0), 2)
+      );
+      
+      d.isDragging = false;
+      d.dragStartTime = undefined;
+      
+      // Determine if node should be pinned based on drag behavior
+      const shouldPin = dragDuration > 500 || dragDistance > 50; // Long drag or significant movement
+      
+      if (shouldPin && !d.pinned) {
+        // Pin the node if it was dragged significantly
+        d.pinned = true;
+        d.locked = true;
+      }
+      
+      if (!event.active) simulation.alphaTarget(0);
+      
+      // Release position if not pinned
+      if (!d.pinned) {
+        d.fx = null;
+        d.fy = null;
+      }
+      
+      // Remove dragging visual state
+      d3.select(this)
+        .classed('dragging', false)
+        .style('cursor', d.draggable !== false ? 'grab' : 'default');
+      
+      d.originalPosition = undefined;
+    });
+}
+
+// Node grouping utilities
+export function getGroupColor(group: string): string {
+  const groupColors = {
+    'frontend': '#ff6b6b',
+    'backend': '#4ecdc4',
+    'data': '#45b7d1',
+    'external': '#96ceb4',
+    'infrastructure': '#feca57',
+  };
+  return groupColors[group] || '#95a5a6';
+}
+
+// File: src/styles/d3ServiceMapStyles.ts
+import { GrafanaTheme2 } from '@grafana/data';
+import { css } from '@emotion/css';
+
+export const getStyles = (theme: GrafanaTheme2) => ({
+  container: css`
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 700px;
+    background: ${theme.colors.background.primary};
+    border: 1px solid ${theme.colors.border.medium};
+    border-radius: ${theme.shape.borderRadius()};
+    overflow: hidden;
+  `,
+  svg: css`
+    width: 100%;
+    height: 100%;
+    background: ${theme.colors.background.primary};
+    
+    .node {
+      cursor: pointer;
+      
+      &:hover circle {
+        stroke-width: 4px;
+        filter: brightness(1.1);
+      }
+    }
+    
+    .link {
+      pointer-events: none;
+      
+      &:hover {
+        stroke-width: 4px !important;
+      }
+    }
+    
+    .link-label {
+      pointer-events: none;
+      user-select: none;
+      font-family: ${theme.typography.fontFamily};
+    }
+    
+    text {
+      user-select: none;
+      pointer-events: none;
+      font-family: ${theme.typography.fontFamily};
+    }
+  `,
+  loading: css`
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 400px;
+    font-size: ${theme.typography.h4.fontSize};
+    color: ${theme.colors.text.secondary};
+    background: ${theme.colors.background.primary};
+  `,
+  controls: css`
+    position: absolute;
+    top: ${theme.spacing(2)};
+    right: ${theme.spacing(2)};
+    display: flex;
+    gap: ${theme.spacing(1)};
+    z-index: 1000;
+  `,
+  controlButton: css`
+    padding: ${theme.spacing(1, 2)};
+    background: ${theme.colors.background.secondary};
+    border: 1px solid ${theme.colors.border.medium};
+    border-radius: ${theme.shape.borderRadius()};
+    color: ${theme.colors.text.primary};
+    font-size: ${theme.typography.bodySmall.fontSize};
+    cursor: pointer;
+    transition: all 0.2s ease;
+    
+    &:hover {
+      background: ${theme.colors.background.canvas};
+      border-color: ${theme.colors.border.strong};
+    }
+    
+    &:active {
+      transform: translateY(1px);
+    }
+  `,
+  legend: css`
+    position: absolute;
+    bottom: ${theme.spacing(2)};
+    left: ${theme.spacing(2)};
+    background: ${theme.colors.background.secondary};
+    border: 1px solid ${theme.colors.border.medium};
+    border-radius: ${theme.shape.borderRadius()};
+    padding: ${theme.spacing(2)};
+    z-index: 1000;
+  `,
+  legendTitle: css`
+    font-weight: ${theme.typography.fontWeightMedium};
+    margin-bottom: ${theme.spacing(1)};
+    color: ${theme.colors.text.primary};
+  `,
+  legendItem: css`
+    display: flex;
+    align-items: center;
+    margin-bottom: ${theme.spacing(0.5)};
+    font-size: ${theme.typography.bodySmall.fontSize};
+    color: ${theme.colors.text.secondary};
+  `,
+  legendColor: css`
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: ${theme.spacing(1)};
+  `,
+});
+
+// File: src/components/NodeOptionsPanel.tsx
+import React, { useState } from 'react';
+import { ServiceNode, D3Node } from '../types';
+import { Button, Input, Select, Switch, ColorPicker } from '@grafana/ui';
+import { css } from '@emotion/css';
+import { GrafanaTheme2 } from '@grafana/data';
+import { useStyles2 } from '@grafana/ui';
+
+interface NodeOptionsPanelProps {
+  selectedNode?: ServiceNode | D3Node;
+  onNodeUpdate: (nodeId: string, updates: Partial<ServiceNode>) => void;
+  onClose: () => void;
+}
+
+const getOptionStyles = (theme: GrafanaTheme2) => ({
+  panel: css`
+    position: fixed;
+    top: 50%;
+    left: 20px;
+    transform: translateY(-50%);
+    width: 300px;
+    background: ${theme.colors.background.primary};
+    border: 1px solid ${theme.colors.border.medium};
+    border-radius: ${theme.shape.borderRadius()};
+    padding: ${theme.spacing(3)};
+    z-index: 1000;
+    box-shadow: ${theme.shadows.z3};
+  `,
+  section: css`
+    margin-bottom: ${theme.spacing(3)};
+  `,
+  sectionTitle: css`
+    font-size: ${theme.typography.h5.fontSize};
+    font-weight: ${theme.typography.fontWeightMedium};
+    margin-bottom: ${theme.spacing(2)};
+    color: ${theme.colors.text.primary};
+  `,
+  field: css`
+    margin-bottom: ${theme.spacing(2)};
+  `,
+  fieldLabel: css`
+    display: block;
+    font-size: ${theme.typography.bodySmall.fontSize};
+    font-weight: ${theme.typography.fontWeightMedium};
+    margin-bottom: ${theme.spacing(1)};
+    color: ${theme.colors.text.secondary};
+  `,
+  buttonGroup: css`
+    display: flex;
+    gap: ${theme.spacing(1)};
+    margin-top: ${theme.spacing(3)};
+  `,
+  colorPreview: css`
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid ${theme.colors.border.medium};
+    display: inline-block;
+    margin-left: ${theme.spacing(1)};
+  `,
+});
+
+export const NodeOptionsPanel: React.FC<NodeOptionsPanelProps> = ({
+  selectedNode,
+  onNodeUpdate,
+  onClose,
+}) => {
+  const styles = useStyles2(getOptionStyles);
+  const [localUpdates, setLocalUpdates] = useState<Partial<ServiceNode>>({});
+
+  if (!selectedNode) return null;
+
+  const currentNode = { ...selectedNode, ...localUpdates };
+
+  const handleUpdate = (key: keyof ServiceNode, value: any) => {
+    setLocalUpdates(prev => ({ ...prev, [key]: value }));
+  };
+
+  const applyChanges = () => {
+    onNodeUpdate(selectedNode.id, localUpdates);
+    setLocalUpdates({});
+    onClose();
+  };
+
+  const sizeOptions = [
+    { label: 'Small', value: 'small' },
+    { label: 'Medium', value: 'medium' },
+    { label: 'Large', value: 'large' },
+    { label: 'Extra Large', value: 'xlarge' },
+  ];
+
+  const shapeOptions = [
+    { label: 'Circle', value: 'circle' },
+    { label: 'Square', value: 'square' },
+    { label: 'Diamond', value: 'diamond' },
+    { label: 'Hexagon', value: 'hexagon' },
+    { label: 'Triangle', value: 'triangle' },
+  ];
+
+  const groupOptions = [
+    { label: 'Frontend', value: 'frontend' },
+    { label: 'Backend', value: 'backend' },
+    { label: 'Data', value: 'data' },
+    { label: 'Infrastructure', value: 'infrastructure' },
+    { label: 'External', value: 'external' },
+  ];
+
+  return (
+    <div className={styles.panel}>
+      <div className={styles.section}>
+        <h3 className={styles.sectionTitle}>Node Options: {selectedNode.name}</h3>
+      </div>
+
+      <div className={styles.section}>
+        <div className={styles.field}>
+          <label className={styles.fieldLabel}>Node Name</label>
+          <Input
+            value={currentNode.name || ''}
+            onChange={(e) => handleUpdate('name', e.currentTarget.value)}
+            placeholder="Enter node name"
+          />
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.fieldLabel}>Size</label>
+          <Select
+            value={currentNode.size || 'medium'}
+            options={sizeOptions}
+            onChange={(e) => handleUpdate('size', e.value)}
+          />
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.fieldLabel}>Shape</label>
+          <Select
+            value={currentNode.shape || 'circle'}
+            options={shapeOptions}
+            onChange={(e) => handleUpdate('shape', e.value)}
+          />
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.fieldLabel}>Group</label>
+          <Select
+            value={currentNode.group || ''}
+            options={[{ label: 'None', value: '' }, ...groupOptions]}
+            onChange={(e) => handleUpdate('group', e.value)}
+          />
+        </div>
+      </div>
+
+      <div className={styles.section}>
+        <h4 className={styles.sectionTitle}>Behavior</h4>
+        
+        <div className={styles.field}>
+          <Switch
+            label="Draggable"
+            value={currentNode.draggable !== false}
+            onChange={(checked) => handleUpdate('draggable', checked)}
+          />
+        </div>
+
+        <div className={styles.field}>
+          <Switch
+            label="Pinned"
+            value={currentNode.pinned || false}
+            onChange={(checked) => handleUpdate('pinned', checked)}
+          />
+        </div>
+
+        <div className={styles.field}>
+          <Switch
+            label="Highlighted"
+            value={currentNode.highlighted || false}
+            onChange={(checked) => handleUpdate('highlighted', checked)}
+          />
+        </div>
+      </div>
+
+      <div className={styles.section}>
+        <h4 className={styles.sectionTitle}>Appearance</h4>
+        
+        <div className={styles.field}>
+          <label className={styles.fieldLabel}>
+            Custom Color
+            {currentNode.color && (
+              <span 
+                className={styles.colorPreview}
+                style={{ backgroundColor: currentNode.color }}
+              />
+            )}
+          </label>
+          <Input
+            type="color"
+            value={currentNode.color || '#1f77b4'}
+            onChange={(e) => handleUpdate('color', e.currentTarget.value)}
+          />
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.fieldLabel}>Icon (Emoji)</label>
+          <Input
+            value={currentNode.icon || ''}
+            onChange={(e) => handleUpdate('icon', e.currentTarget.value)}
+            placeholder="Enter emoji or symbol"
+            maxLength={2}
+          />
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.fieldLabel}>Layer (Z-Index)</label>
+          <Input
+            type="number"
+            value={currentNode.layer || 0}
+            onChange={(e) => handleUpdate('layer', parseInt(e.currentTarget.value) || 0)}
+            min={-10}
+            max={10}
+          />
+        </div>
+      </div>
+
+      <div className={styles.buttonGroup}>
+        <Button onClick={applyChanges} variant="primary">
+          Apply Changes
+        </Button>
+        <Button onClick={onClose} variant="secondary">
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+};
+import React from 'react';
+import { css } from '@emotion/css';
+import { GrafanaTheme2 } from '@grafana/data';
+import { useStyles2 } from '@grafana/ui';
+import { getNodeColor, getStatusColor } from '../utils/d3Utils';
+
+const getLegendStyles = (theme: GrafanaTheme2) => ({
+  legend: css`
+    position: absolute;
+    bottom: ${theme.spacing(2)};
+    left: ${theme.spacing(2)};
+    background: ${theme.colors.background.secondary};
+    border: 1px solid ${theme.colors.border.medium};
+    border-radius: ${theme.shape.borderRadius()};
+    padding: ${theme.spacing(2)};
+    z-index: 1000;
+    min-width: 200px;
+  `,
+  section: css`
+    margin-bottom: ${theme.spacing(2)};
+    
+    &:last-child {
+      margin-bottom: 0;
+    }
+  `,
+  title: css`
+    font-weight: ${theme.typography.fontWeightMedium};
+    margin-bottom: ${theme.spacing(1)};
+    color: ${theme.colors.text.primary};
+    font-size: ${theme.typography.body.fontSize};
+  `,
+  item: css`
+    display: flex;
+    align-items: center;
+    margin-bottom: ${theme.spacing(0.5)};
+    font-size: ${theme.typography.bodySmall.fontSize};
+    color: ${theme.colors.text.secondary};
+  `,
+  colorIndicator: css`
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: ${theme.spacing(1)};
+    flex-shrink: 0;
+  `,
+});
+
+export const ServiceMapLegend: React.FC = () => {
+  const styles = useStyles2(getLegendStyles);
+
+  const nodeTypes = [
+    { type: 'service', label: 'Service' },
+    { type: 'database', label: 'Database' },
+    { type: 'external', label: 'External API' },
+    { type: 'frontend', label: 'Frontend' },
+    { type: 'cache', label: 'Cache' },
+    { type: 'queue', label: 'Message Queue' },
+  ];
+
+  const statusTypes = [
+    { status: 'healthy', label: 'Healthy' },
+    { status: 'warning', label: 'Warning' },
+    { status: 'critical', label: 'Critical' },
+  ];
+
+  return (
+    <div className={styles.legend}>
+      <div className={styles.section}>
+        <div className={styles.title}>Node Types</div>
+        {nodeTypes.map(({ type, label }) => (
+          <div key={type} className={styles.item}>
+            <div 
+              className={styles.colorIndicator}
+              style={{ backgroundColor: getNodeColor(type) }}
+            />
+            {label}
+          </div>
+        ))}
+      </div>
+      
+      <div className={styles.section}>
+        <div className={styles.title}>Health Status</div>
+        {statusTypes.map(({ status, label }) => (
+          <div key={status} className={styles.item}>
+            <div 
+              className={styles.colorIndicator}
+              style={{ backgroundColor: getStatusColor(status) }}
+            />
+            {label}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// File: src/hooks/useD3ServiceMap.ts
+import { useEffect, useRef } from 'react';
+import * as d3 from 'd3';
+import { ServiceMapData, D3Node, D3Link } from '../types';
+import { GrafanaTheme2 } from '@grafana/data';
+import { getStatusColor, getNodeColor } from '../utils/d3Utils';
+
+interface UseD3ServiceMapProps {
+  data: ServiceMapData;
+  theme: GrafanaTheme2;
+  onNodeClick: (nodeId: string) => void;
+  onBackgroundClick: () => void;
+}
+
+export const useD3ServiceMap = ({
+  data,
+  theme,
+  onNodeClick,
+  onBackgroundClick,
+}: UseD3ServiceMapProps) => {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);
+
+  useEffect(() => {
+    if (!data || !svgRef.current) return;
+
+    const svg = d3.select(svgRef.current);
+    const container = svgRef.current.parentElement;
+    if (!container) return;
+
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+
+    // Clear previous content
+    svg.selectAll('*').remove();
+
+    // Create main group for zooming and panning
+    const g = svg.append('g').attr('class', 'main-group');
+
+    // Set up zoom behavior
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.1, 4])
+      .on('zoom', (event) => {
+        g.attr('transform', event.transform);
+      });
+
+    svg.call(zoom);
+
+    // Prepare data
+    const nodes: D3Node[] = data.nodes.map(d => ({ ...d }));
+    const links: D3Link[] = data.edges.map(d => ({
+      ...d,
+      source: nodes.find(n => n.id === (typeof d.source === 'string' ? d.source : d.source.id))!,
+      target: nodes.find(n => n.id === (typeof d.target === 'string' ? d.target : d.target.id))!,
+      value: d.metrics.requestRate,
+    }));
+
+    // Create force simulation
+    const simulation = d3.forceSimulation<D3Node>(nodes)
+      .force('link', d3.forceLink<D3Node, D3Link>(links).id(d => d.id).distance(120))
+      .force('charge', d3.forceManyBody().strength(-400))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collision', d3.forceCollide().radius(35));
+
+    simulationRef.current = simulation;
+
+    // Create arrow markers
+    const defs = svg.append('defs');
+    ['healthy', 'warning', 'critical'].forEach(status => {
+      defs.append('marker')
+        .attr('id', `arrow-${status}`)
+        .attr('viewBox', '0 -5 10 10')
+        .attr('refX', 30)
+        .attr('refY', 0)
+        .attr('markerWidth', 6)
+        .attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M0,-5L10,0L0,5')
+        .attr('fill', getStatusColor(status));
+    });
+
+    // Create links
+    const link = g.append('g')
+      .selectAll('line')
+      .data(links)
+      .enter().append('line')
+      .attr('class', 'link')
+      .attr('stroke', d => getStatusColor(d.status))
+      .attr('stroke-width', d => Math.max(2, Math.sqrt(d.value || 1) / 3))
+      .attr('marker-end', d => `url(#arrow-${d.status})`)
+      .style('opacity', 0.7);
+
+    // Create link labels
+    const linkLabels = g.append('g')
+      .selectAll('text')
+      .data(links)
+      .enter().append('text')
+      .attr('class', 'link-label')
+      .attr('text-anchor', 'middle')
+      .attr('font-size', '9px')
+      .attr('fill', theme.colors.text.secondary)
+      .attr('dy', -5)
+      .text(d => `${d.metrics.requestRate.toFixed(0)} req/s`);
+
+    // Create nodes
+    const node = g.append('g')
+      .selectAll('g')
+      .data(nodes)
+      .enter().append('g')
+      .attr('class', 'node')
+      .style('cursor', 'pointer');
+
+    // Add circles for nodes
+    node.append('circle')
+      .attr('r', d => {
+        const baseRadius = 25;
+        const sizeMultiplier = Math.log(d.metrics.requestRate + 1) * 2;
+        return Math.min(baseRadius + sizeMultiplier, 45);
+      })
+      .attr('fill', d => getNodeColor(d.type))
+      .attr('stroke', d => getStatusColor(d.status))
+      .attr('stroke-width', 3)
+      .style('filter', 'drop-shadow(2px 2px 4px rgba(0,0,0,0.3))');
+
+    // Add node labels
+    node.append('text')
+      .attr('dx', 0)
+      .attr('dy', -35)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', '11px')
+      .attr('font-weight', 'bold')
+      .attr('fill', theme.colors.text.primary)
+      .text(d => d.name);
+
+    // Add metrics text below nodes
+    node.append('text')
+      .attr('dx', 0)
+      .attr('dy', 50)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', '9px')
+      .attr('fill', theme.colors.text.secondary)
+      .text(d => `${d.metrics.latency}ms | ${d.metrics.errorRate.toFixed(1)}%`);
+
+    // Add drag behavior
+    const drag = d3.drag<SVGGElement, D3Node>()
+      .on('start', (event, d) => {
+        if (!event.active && simulationRef.current) {
+          simulationRef.current.alphaTarget(0.3).restart();
+        }
+        d.fx = d.x;
+        d.fy = d.y;
+      })
+      .on('drag', (event, d) => {
+        d.fx = event.x;
+        d.fy = event.y;
+      })
+      .on('end', (event, d) => {
+        if (!event.active && simulationRef.current) {
+          simulationRef.current.alphaTarget(0);
+        }
+        d.fx = null;
+        d.fy = null;
+      });
+
+    node.call(drag);
+
+    // Add click handlers
+    node.on('click', (event, d) => {
+      event.stopPropagation();
+      onNodeClick(d.id);
+      highlightConnections(d.id, nodes, links, node, link);
+    });
+
+    svg.on('click', () => {
+      onBackgroundClick();
+      clearHighlights(node, link);
+    });
+
+    // Update positions on simulation tick
+    simulation.on('tick', () => {
+      link
+        .attr('x1', d => d.source.x!)
+        .attr('y1', d => d.source.y!)
+        .attr('x2', d => d.target.x!)
+        .attr('y2', d => d.target.y!);
+
+      linkLabels
+        .attr('x', d => (d.source.x! + d.target.x!) / 2)
+        .attr('y', d => (d.source.y! + d.target.y!) / 2);
+
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+    function highlightConnections(
+      nodeId: string,
+      nodes: D3Node[],
+      links: D3Link[],
+      nodeSelection: any,
+      linkSelection: any
+    ) {
+      const connectedNodeIds = new Set<string>();
+      connectedNodeIds.add(nodeId);
+
+      links.forEach(link => {
+        if (link.source.id === nodeId || link.target.id === nodeId) {
+          connectedNodeIds.add(link.source.id);
+          connectedNodeIds.add(link.target.id);
+        }
+      });
+
+      nodeSelection.style('opacity', (d: D3Node) => connectedNodeIds.has(d.id) ? 1 : 0.2);
+      linkSelection.style('opacity', (d: D3Link) => 
+        d.source.id === nodeId || d.target.id === nodeId ? 1 : 0.1);
+    }
+
+    function clearHighlights(nodeSelection: any, linkSelection: any) {
+      nodeSelection.style('opacity', 1);
+      linkSelection.style('opacity', 0.7);
+    }
+
+    return () => {
+      if (simulationRef.current) {
+        simulationRef.current.stop();
+      }
+    };
+  }, [data, theme, onNodeClick, onBackgroundClick]);
+
+  return svgRef;
+};
+
+// File: src/components/EnhancedD3ServiceMap.tsx
+import React, { useState } from 'react';
+import { SceneComponentProps, SceneObjectBase, SceneObjectState } from '@grafana/scenes';
+import { ServiceMapData } from '../types';
+import { ServiceMapDataProvider } from '../data/ServiceMapDataProvider';
+import { useStyles2, useTheme2 } from '@grafana/ui';
+import { getStyles } from '../styles/d3ServiceMapStyles';
+import { useD3ServiceMap } from '../hooks/useD3ServiceMap';
+import { ServiceNodeDetails } from './ServiceNodeDetails';
+import { ServiceMapLegend } from './ServiceMapLegend';
+
+interface EnhancedD3ServiceMapState extends SceneObjectState {
+  data?: ServiceMapData;
+  selectedNode?: string;
+  loading: boolean;
+}
+
+interface EnhancedD3ServiceMapProps {
+  dataProvider: ServiceMapDataProvider;
+}
+
+export class EnhancedD3ServiceMap extends SceneObjectBase<EnhancedD3ServiceMapState> {
+  private dataProvider: ServiceMapDataProvider;
+
+  constructor(props: EnhancedD3ServiceMapProps) {
+    super({
+      loading: true,
+    });
+    this.dataProvider = props.dataProvider;
+  }
+
+  public static Component = ({ model }: SceneComponentProps<EnhancedD3ServiceMap>) => {
+    const { data, loading, selectedNode } = model.useState();
+    const theme = useTheme2();
+    const styles = useStyles2(getStyles);
+
+    const handleNodeClick = (nodeId: string) => {
+      model.setState({ selectedNode: nodeId });
+    };
+
+    const handleBackgroundClick = () => {
+      model.setState({ selectedNode: undefined });
+    };
+
+    const svgRef = useD3ServiceMap({
+      data: data!,
+      theme,
+      onNodeClick: handleNodeClick,
+      onBackgroundClick: handleBackgroundClick,
+    });
+
+    React.useEffect(() => {
+      model.dataProvider.getData().then((serviceMapData) => {
+        model.setState({ data: serviceMapData, loading: false });
+      });
+
+      const interval = setInterval(() => {
+        model.dataProvider.getData().then((serviceMapData) => {
+          model.setState({ data: serviceMapData });
+        });
+      }, 10000);
+
+      return () => clearInterval(interval);
+    }, [model]);
+
+    if (loading) {
+      return <div className={styles.loading}>Loading D3 service map...</div>;
+    }
+
+    return (
+      <div className={styles.container}>
+        <svg ref={svgRef} className={styles.svg} width="100%" height="100%" />
+        
+        <div className={styles.controls}>
+          <button 
+            className={styles.controlButton}
+            onClick={() => {
+              const svg = d3.select(svgRef.current);
+              svg.transition().call(
+                d3.zoom<SVGSVGElement, unknown>().transform,
+                d3.zoomIdentity
+              );
+            }}
+          >
+            Reset View
+          </button>
+        </div>
+
+        <ServiceMapLegend />
+
+        {selectedNode && data && (
+          <ServiceNodeDetails
+            node={data.nodes.find(n => n.id === selectedNode)}
+            onClose={() => model.setState({ selectedNode: undefined })}
+          />
+        )}
+      </div>
+    );
+  };
+}
+
+// File: tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2018",
+    "lib": ["DOM", "ES6", "ES2017", "ES2018"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "declaration": true,
+    "types": ["node", "jest"],
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["*"]
+    }
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}
+
+// File: .gitignore
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.env.local
+.vscode/
+*.tgz
+.grafana/
+
+// File: webpack.config.js
+const path = require('path');
+
+module.exports = {
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, 'src'),
+    },
+    extensions: ['.ts', '.tsx', '.js', '.jsx'],
+  },
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: 'ts-loader',
+        exclude: /node_modules/,
+      },
+    ],
+  },
+};
+
+// File: README.md
+# Grafana Scenes D3.js Service Map App
+
+A comprehensive Grafana app plugin built with Grafana Scenes and D3.js that provides interactive service map visualization with nodes and edges representing microservices architecture.
+
+## 🚀 Features
+
+- **Interactive D3.js Visualization**: Force-directed graph with drag, zoom, and pan capabilities
+- **Real-time Service Monitoring**: Live updates of service health and metrics
+- **Rich Node Details**: Click nodes to view detailed metrics and status information
+- **Dynamic Styling**: Color-coded nodes and edges based on service health
+- **Responsive Design**: Adapts to different screen sizes and Grafana themes
+- **Service Types Support**: Frontend, services, databases, caches, queues, external APIs
+- **Performance Metrics**: Request rate, error rate, latency, CPU, and memory usage
+- **Interactive Legend**: Visual guide for node types and status indicators
+
+## 📁 Project Structure
+
+```
+src/
+├── components/                    # React components
+│   ├── ServiceMapApp.tsx         # Main app component
+│   ├── ServiceMapScene.tsx       # Grafana Scenes setup
+│   ├── D3ServiceMapVisualization.tsx  # Original D3 implementation
+│   ├── EnhancedD3ServiceMap.tsx  # Enhanced version with hooks
+│   ├── ServiceNodeDetails.tsx    # Node details modal
+│   └── ServiceMapLegend.tsx      # Interactive legend
+├── data/                         # Data providers and fetching
+│   └── ServiceMapDataProvider.ts # Mock data provider
+├── hooks/                        # Custom React hooks
+│   └── useD3ServiceMap.ts       # D3 visualization logic hook
+├── styles/                       # Styling utilities
+│   └── d3ServiceMapStyles.ts    # CSS-in-JS styles
+├── utils/                        # Utility functions
+│   └── d3Utils.ts               # D3-specific utilities
+├── types.ts                      # TypeScript type definitions
+├── module.ts                     # Plugin entry point
+└── plugin.json                   # Plugin metadata
+```
+
+## 🛠️ Installation & Setup
+
+1. **Create plugin directory**:
+   ```bash
+   mkdir grafana-d3-servicemap-plugin
+   cd grafana-d3-servicemap-plugin
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+3. **Development**:
+   ```bash
+   npm run dev        # Start development server
+   npm run build      # Build for production
+   npm run test       # Run tests
+   npm run sign       # Sign plugin (if needed)
+   ```
+
+4. **Deploy to Grafana**:
+   ```bash
+   # Copy built plugin to Grafana plugins directory
+   cp -r dist/ /var/lib/grafana/plugins/d3-servicemap-scenes-app/
+   # Restart Grafana
+   sudo systemctl restart grafana-server
+   ```
+
+## 🎯 Key D3.js Features
+
+### Force Simulation
+- **Automatic Layout**: Nodes position themselves based on connections
+- **Interactive Dragging**: Drag nodes to reposition them
+- **Collision Detection**: Prevents nodes from overlapping
+- **Dynamic Forces**: Adjustable attraction/repulsion forces
+
+### Visual Elements
+- **Adaptive Node Sizes**: Node radius based on request rate
+- **Color-coded Status**: Health status indicated by border colors
+- **Animated Transitions**: Smooth movements and updates
+- **Arrow Markers**: Directional flow indicators on edges
+
+### Interactivity
+- **Zoom & Pan**: Mouse wheel zoom, click-drag pan
+- **Node Selection**: Click to highlight connections
+- **Hover Effects**: Visual feedback on mouse interactions
+- **Reset Controls**: Button to reset zoom/pan state
+
+## 🔧 Customization
+
+### Adding New Node Types
+```typescript
+// In src/utils/d3Utils.ts
+export function getNodeColor(type: string): string {
+  switch (type) {
+    case 'your-new-type':
+      return '#your-color';
+    // ... existing cases
+  }
+}
+```
+
+### Connecting to Real Data
+Replace the mock data in `ServiceMapDataProvider.ts`:
+
+```typescript
+async getData(): Promise<ServiceMapData> {
+  const response = await fetch('/api/servicemap');
+  return response.json();
+}
+```
+
+### Custom Metrics
+Add new metrics to the `ServiceNode` interface and update the visualization accordingly.
+
+## 📊 Data Format
+
+The service map expects data in this format:
+
+```typescript
+interface ServiceMapData {
+  nodes: ServiceNode[];
+  edges: ServiceEdge[];
+  timestamp: number;
+}
+```
+
+Each node includes performance metrics, status, and type information. Edges represent service-to-service communication with associated metrics.
+
+## 🎨 Theme Integration
+
+The app automatically adapts to Grafana's light/dark themes and uses the configured color palette for consistent visual integration.
+
+## 📈 Performance Considerations
+
+- **Efficient Rendering**: D3.js handles large graphs efficiently
+- **Optimized Updates**: Only re-renders when data changes
+- **Memory Management**: Proper cleanup of D3 elements and event listeners
+- **Throttled Updates**: Configurable refresh intervals
+
+## 🔗 Integration Points
+
+- **Grafana Scenes**: Full integration with Scenes framework
+- **Time Range**: Respects Grafana's time picker
+- **Refresh Controls**: Auto-refresh with configurable intervals
+- **Variables**: Support for Grafana template variables
+
+## 📝 License
+
+Apache 2.0 License - See LICENSE file for detailsd: 'web-frontend',
+        name: 'Web Frontend',
+        type: 'frontend',
+        status: 'healthy',
+        metrics: {
+          requestRate: 245.8,
+          errorRate: 0.1,
+          latency: 32,
+          cpu: 45.2,
+          memory: 62.8,
+        },
+      },
+      {
+        id: 'mobile-app',
+        name: 'Mobile App',
+        type: 'frontend',
+        status: 'healthy',
+        metrics: {
+          requestRate: 156.3,
+          errorRate: 0.3,
+          latency: 28,
+          cpu: 38.7,
+          memory: 54.1,
+        },
+      },
+      {
+        id: 'api-gateway',
+        name: 'API Gateway',
+        type: 'service',
+        status: 'healthy',
+        metrics: {
+          requestRate: 402.1,
+          errorRate: 0.2,
+          latency: 15,
+          cpu: 52.3,
+          memory: 71.4,
+        },
+      },
+      {
+        id: 'auth-service',
+        name: 'Auth Service',
+        type: 'service',
+        status: 'healthy',
+        metrics: {
+          requestRate: 89.5,
+          errorRate: 0.1,
+          latency: 22,
+          cpu: 34.1,
+          memory: 48.9,
+        },
+      },
+      {
+        id: 'user-service',
+        name: 'User Service',
+        type: 'service',
+        status: 'warning',
+        metrics: {
+          requestRate: 67.2,
+          errorRate: 2.8,
+          latency: 156,
+          cpu: 78.5,
+          memory: 85.2,
+        },
+      },
+      {
+        id: 'order-service',
+        name: 'Order Service',
+        type: 'service',
+        status: 'healthy',
+        metrics: {
+          requestRate: 124.7,
+          errorRate: 0.4,
+          latency: 45,
+          cpu: 42.8,
+          memory: 59.3,
+        },
+      },
+      {
+        id: 'payment-service',
+        name: 'Payment Service',
+        type: 'service',
+        status: 'critical',
+        metrics: {
+          requestRate: 34.6,
+          errorRate: 12.3,
+          latency: 487,
+          cpu: 89.2,
+          memory: 94.7,
+        },
+      },
+      {
+        id: 'notification-service',
+        name: 'Notification Service',
+        type: 'service',
+        status: 'healthy',
+        metrics: {
+          requestRate: 45.9,
+          errorRate: 0.8,
+          latency: 89,
+          cpu: 28.4,
+          memory: 41.2,
+        },
+      },
+      {
+        id: 'redis-cache',
+        name: 'Redis Cache',
+        type: 'cache',
+        status: 'healthy',
+        metrics: {
+          requestRate: 567.8,
+          errorRate: 0.0,
+          latency: 3,
+          cpu: 23.1,
+          memory: 76.8,
+        },
+      },
+      {
+        id: 'postgres-db',
+        name: 'PostgreSQL',
+        type: 'database',
+        status: 'healthy',
+        metrics: {
+          requestRate: 234.5,
+          errorRate: 0.1,
+          latency: 18,
+          cpu: 65.4,
+          memory: 72.1,
+        },
+      },
+      {
+        id: 'mongodb',
+        name: 'MongoDB',
+        type: 'database',
+        status: 'warning',
+        metrics: {
+          requestRate: 89.3,
+          errorRate: 1.2,
+          latency: 67,
+          cpu: 82.7,
+          memory: 88.9,
+        },
+      },
+      {
+        id: 'rabbitmq',
+        name: 'RabbitMQ',
+        type: 'queue',
+        status: 'healthy',
+        metrics: {
+          requestRate: 156.7,
+          errorRate: 0.2,
+          latency: 12,
+          cpu: 31.8,
+          memory: 45.6,
+        },
+      },
+      {
+        id: 'external-payment-api',
+        name: 'Payment Gateway API',
+        type: 'external',
+        status: 'warning',
+        metrics: {
+          requestRate: 23.4,
+          errorRate: 4.7,
+          latency: 234,
+        },
+      },
+      {
+        id: 'external-email-api',
+        name: 'Email Service API',
+        type: 'external',
+        status: 'healthy',
+        metrics: {
+          requestRate: 15.8,
+          errorRate: 1.1,
+          latency: 178,
+        },
+      },
+    ];
+
+    const edges: ServiceEdge[] = [
+      {
+        id: 'web-gateway',
+        source: 'web-frontend',
+        target: 'api-gateway',
+        status: 'healthy',
+        metrics: { requestRate: 245.8, errorRate: 0.1, latency: 8 },
+      },
+      {
+        id: 'mobile-gateway',
+        source: 'mobile-app',
+        target: 'api-gateway',
+        status: 'healthy',
+        metrics: { requestRate: 156.3, errorRate: 0.3, latency: 12 },
+      },
+      {
+        id: 'gateway-auth',
+        source: 'api-gateway',
+        target: 'auth-service',
+        status: 'healthy',
+        metrics: { requestRate: 89.5, errorRate: 0.1, latency: 5 },
+      },
+      {
+        id: 'gateway-user',
+        source: 'api-gateway',
+        target: 'user-service',
+        status: 'warning',
+        metrics: { requestRate: 67.2, errorRate: 2.8, latency: 23 },
+      },
+      {
+        id: 'gateway-order',
+        source: 'api-gateway',
+        target: 'order-service',
+        status: 'healthy',
+        metrics: { requestRate: 124.7, errorRate: 0.4, latency: 15 },
+      },
+      {
+        id: 'order-payment',
+        source: 'order-service',
+        target: 'payment-service',
+        status: 'critical',
+        metrics: { requestRate: 34.6, errorRate: 12.3, latency: 35 },
+      },
+      {
+        id: 'order-notification',
+        source: 'order-service',
+        target: 'notification-service',
+        status: 'healthy',
+        metrics: { requestRate: 45.9, errorRate: 0.8, latency: 18 },
+      },
+      {
+        id: 'auth-cache',
+        source: 'auth-service',
+        target: 'redis-cache',
+        status: 'healthy',
+        metrics: { requestRate: 156.7, errorRate: 0.0, latency: 2 },
+      },
+      {
+        id: 'user-cache',
+        source: 'user-service',
+        target: 'redis-cache',
+        status: 'healthy',
+        metrics: { requestRate: 234.5, errorRate: 0.0, latency: 3 },
+      },
+      {
+        i
