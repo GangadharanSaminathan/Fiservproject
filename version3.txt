@@ -1,0 +1,2476 @@
+// Project Structure:
+// src/
+// ├── components/
+// │   ├── ServiceMap/
+// │   │   ├── D3ServiceMapRenderer.tsx
+// │   │   ├── DragControl.tsx
+// │   │   ├── EnhancedServiceMapVisualization.tsx
+// │   │   ├── ServiceMapLegend.tsx
+// │   │   ├── NodeEditor.tsx
+// │   │   └── index.ts
+// │   └── App.tsx
+// ├── scenes/
+// │   └── ServiceMapScene.ts
+// ├── datasource/
+// │   ├── ServiceMapDataSource.ts
+// │   └── MockDataProvider.ts
+// ├── utils/
+// │   ├── storage.ts
+// │   ├── calculations.ts
+// │   ├── formatters.ts
+// │   └── constants.ts
+// ├── types/
+// │   ├── servicemap.ts
+// │   ├── datasource.ts
+// │   └── index.ts
+// ├── styles/
+// │   ├── servicemap.css
+// │   ├── components.css
+// │   └── index.css
+// └── index.tsx
+
+// ====================
+// src/types/servicemap.ts
+// ====================
+export interface ServiceNode {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  type: NodeType;
+  status: NodeStatus;
+  group?: string;
+  metadata?: NodeMetadata;
+  metrics?: NodeMetrics;
+}
+
+export interface ServiceEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+  type: EdgeType;
+  weight?: number;
+  metadata?: EdgeMetadata;
+  metrics?: EdgeMetrics;
+}
+
+export interface ServiceMapData {
+  nodes: ServiceNode[];
+  edges: ServiceEdge[];
+  layout?: LayoutConfiguration;
+}
+
+export type NodeType = 'service' | 'database' | 'queue' | 'external' | 'gateway' | 'cache' | 'monitor';
+export type NodeStatus = 'healthy' | 'warning' | 'error' | 'unknown' | 'maintenance';
+export type EdgeType = 'http' | 'grpc' | 'message' | 'sql' | 'tcp' | 'websocket' | 'streaming';
+
+export interface NodeMetadata {
+  version?: string;
+  environment?: string;
+  namespace?: string;
+  tags?: string[];
+  description?: string;
+  owner?: string;
+  repository?: string;
+}
+
+export interface NodeMetrics {
+  cpu: number;
+  memory: number;
+  requests: number;
+  responseTime?: number;
+  errorRate?: number;
+  uptime?: number;
+  connections?: number;
+}
+
+export interface EdgeMetadata {
+  protocol?: string;
+  port?: number;
+  encrypted?: boolean;
+  description?: string;
+}
+
+export interface EdgeMetrics {
+  latency: number;
+  throughput: number;
+  errorRate: number;
+  bandwidth?: number;
+  packetLoss?: number;
+}
+
+export interface LayoutConfiguration {
+  algorithm: 'force' | 'hierarchical' | 'circular' | 'manual';
+  spacing: number;
+  iterations?: number;
+  gravityStrength?: number;
+}
+
+export interface MapViewport {
+  x: number;
+  y: number;
+  scale: number;
+}
+
+export interface D3ServiceMapConfig {
+  width: number;
+  height: number;
+  nodeRadius: number;
+  linkDistance: number;
+  chargeStrength: number;
+  alphaDecay: number;
+}
+
+// ====================
+// src/types/datasource.ts
+// ====================
+export interface DataSourceConfig {
+  url: string;
+  type: 'prometheus' | 'graphite' | 'influxdb' | 'mock';
+  credentials?: {
+    username?: string;
+    password?: string;
+    token?: string;
+  };
+  refreshInterval: number;
+}
+
+export interface MetricsQuery {
+  nodeId?: string;
+  edgeId?: string;
+  metric: string;
+  timeRange: TimeRange;
+  aggregation?: 'avg' | 'sum' | 'max' | 'min';
+}
+
+export interface TimeRange {
+  from: Date;
+  to: Date;
+}
+
+export interface MetricsResponse {
+  nodeId?: string;
+  edgeId?: string;
+  values: MetricValue[];
+  meta?: {
+    query: string;
+    executionTime: number;
+  };
+}
+
+export interface MetricValue {
+  timestamp: number;
+  value: number;
+}
+
+// ====================
+// src/types/index.ts
+// ====================
+export * from './servicemap';
+export * from './datasource';
+
+// ====================
+// src/utils/constants.ts
+// ====================
+export const NODE_TYPES = {
+  service: { label: 'Service', color: '#4A90E2', icon: '⚡' },
+  database: { label: 'Database', color: '#F5A623', icon: '🗄️' },
+  queue: { label: 'Queue', color: '#7ED321', icon: '📬' },
+  external: { label: 'External', color: '#BD10E0', icon: '🌐' },
+  gateway: { label: 'Gateway', color: '#50E3C2', icon: '🚪' },
+  cache: { label: 'Cache', color: '#B8E986', icon: '⚡' },
+  monitor: { label: 'Monitor', color: '#9013FE', icon: '📊' }
+} as const;
+
+export const NODE_STATUS = {
+  healthy: { label: 'Healthy', color: '#50E3C2' },
+  warning: { label: 'Warning', color: '#F5A623' },
+  error: { label: 'Error', color: '#D0021B' },
+  unknown: { label: 'Unknown', color: '#9B9B9B' },
+  maintenance: { label: 'Maintenance', color: '#4A4A4A' }
+} as const;
+
+export const EDGE_TYPES = {
+  http: { label: 'HTTP', color: '#4A90E2', strokeDasharray: 'none' },
+  grpc: { label: 'gRPC', color: '#7ED321', strokeDasharray: 'none' },
+  message: { label: 'Message Queue', color: '#F5A623', strokeDasharray: '5,5' },
+  sql: { label: 'SQL', color: '#BD10E0', strokeDasharray: 'none' },
+  tcp: { label: 'TCP', color: '#50E3C2', strokeDasharray: '3,3' },
+  websocket: { label: 'WebSocket', color: '#9013FE', strokeDasharray: '8,2' },
+  streaming: { label: 'Streaming', color: '#FF6B35', strokeDasharray: '10,5' }
+} as const;
+
+export const DEFAULT_CONFIG = {
+  nodeRadius: 30,
+  linkDistance: 150,
+  chargeStrength: -300,
+  alphaDecay: 0.02,
+  velocityDecay: 0.4
+} as const;
+
+export const LAYOUT_ALGORITHMS = {
+  force: 'Force-Directed',
+  hierarchical: 'Hierarchical',
+  circular: 'Circular',
+  manual: 'Manual'
+} as const;
+
+// ====================
+// src/utils/calculations.ts
+// ====================
+import { ServiceNode, ServiceEdge, ServiceMapData } from '../types';
+
+export class MapCalculations {
+  static calculateNodeDegree(nodeId: string, edges: ServiceEdge[]): number {
+    return edges.filter(e => e.source === nodeId || e.target === nodeId).length;
+  }
+
+  static calculateCentrality(nodeId: string, data: ServiceMapData): number {
+    const totalConnections = data.edges.length;
+    const nodeConnections = this.calculateNodeDegree(nodeId, data.edges);
+    return totalConnections > 0 ? nodeConnections / totalConnections : 0;
+  }
+
+  static findCriticalPath(data: ServiceMapData): ServiceNode[] {
+    // Simple implementation - find path with highest total metrics
+    const visited = new Set<string>();
+    const path: ServiceNode[] = [];
+    
+    const findHighestMetricNode = (excludeIds: Set<string>): ServiceNode | null => {
+      return data.nodes
+        .filter(n => !excludeIds.has(n.id))
+        .reduce((highest, current) => {
+          const currentScore = (current.metrics?.cpu || 0) + (current.metrics?.memory || 0);
+          const highestScore = (highest?.metrics?.cpu || 0) + (highest?.metrics?.memory || 0);
+          return currentScore > highestScore ? current : highest;
+        }, null as ServiceNode | null);
+    };
+
+    let current = findHighestMetricNode(visited);
+    while (current && path.length < 10) {
+      path.push(current);
+      visited.add(current.id);
+      current = findHighestMetricNode(visited);
+    }
+
+    return path;
+  }
+
+  static calculateMapBounds(nodes: ServiceNode[]): { 
+    minX: number; minY: number; maxX: number; maxY: number; 
+  } {
+    if (nodes.length === 0) {
+      return { minX: 0, minY: 0, maxX: 800, maxY: 600 };
+    }
+
+    return nodes.reduce((bounds, node) => ({
+      minX: Math.min(bounds.minX, node.x - 50),
+      minY: Math.min(bounds.minY, node.y - 50),
+      maxX: Math.max(bounds.maxX, node.x + 50),
+      maxY: Math.max(bounds.maxY, node.y + 50)
+    }), {
+      minX: nodes[0].x,
+      minY: nodes[0].y,
+      maxX: nodes[0].x,
+      maxY: nodes[0].y
+    });
+  }
+
+  static generateNodeId(): string {
+    return `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  static generateEdgeId(sourceId: string, targetId: string): string {
+    return `edge-${sourceId}-${targetId}`;
+  }
+}
+
+// ====================
+// src/utils/formatters.ts
+// ====================
+export class MetricsFormatter {
+  static formatBytes(bytes: number): string {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let unitIndex = 0;
+    let value = bytes;
+
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex++;
+    }
+
+    return `${value.toFixed(1)} ${units[unitIndex]}`;
+  }
+
+  static formatLatency(ms: number): string {
+    if (ms < 1) return `${(ms * 1000).toFixed(0)}μs`;
+    if (ms < 1000) return `${ms.toFixed(1)}ms`;
+    return `${(ms / 1000).toFixed(2)}s`;
+  }
+
+  static formatThroughput(rps: number): string {
+    if (rps < 1000) return `${rps.toFixed(1)} RPS`;
+    if (rps < 1000000) return `${(rps / 1000).toFixed(1)}K RPS`;
+    return `${(rps / 1000000).toFixed(1)}M RPS`;
+  }
+
+  static formatPercentage(value: number): string {
+    return `${value.toFixed(1)}%`;
+  }
+
+  static formatUptime(seconds: number): string {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+  }
+}
+
+// ====================
+// src/utils/storage.ts
+// ====================
+import { ServiceMapData } from '../types';
+
+export class ServiceMapStorage {
+  private static STORAGE_KEY = 'grafana-servicemap-data';
+  private static VERSION_KEY = 'grafana-servicemap-version';
+  private static CURRENT_VERSION = '1.0.0';
+
+  static save(data: ServiceMapData): boolean {
+    try {
+      const dataWithVersion = {
+        version: this.CURRENT_VERSION,
+        timestamp: new Date().toISOString(),
+        data
+      };
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(dataWithVersion));
+      localStorage.setItem(this.VERSION_KEY, this.CURRENT_VERSION);
+      return true;
+    } catch (error) {
+      console.error('Failed to save service map data:', error);
+      return false;
+    }
+  }
+
+  static load(): ServiceMapData {
+    try {
+      const stored = localStorage.getItem(this.STORAGE_KEY);
+      const version = localStorage.getItem(this.VERSION_KEY);
+      
+      if (stored && version === this.CURRENT_VERSION) {
+        const parsed = JSON.parse(stored);
+        return parsed.data || this.getDefaultData();
+      }
+    } catch (error) {
+      console.error('Failed to load service map data:', error);
+    }
+    
+    return this.getDefaultData();
+  }
+
+  static getDefaultData(): ServiceMapData {
+    return {
+      nodes: [
+        {
+          id: 'frontend',
+          label: 'Frontend App',
+          x: 100,
+          y: 200,
+          type: 'service',
+          status: 'healthy',
+          group: 'web',
+          metadata: {
+            version: '2.1.4',
+            environment: 'production',
+            namespace: 'web-services',
+            tags: ['react', 'typescript'],
+            description: 'Customer-facing web application',
+            owner: 'Frontend Team'
+          },
+          metrics: { 
+            cpu: 45, 
+            memory: 60, 
+            requests: 1200,
+            responseTime: 150,
+            errorRate: 0.2,
+            uptime: 2592000
+          }
+        },
+        {
+          id: 'api-gateway',
+          label: 'API Gateway',
+          x: 350,
+          y: 200,
+          type: 'gateway',
+          status: 'healthy',
+          group: 'infrastructure',
+          metadata: {
+            version: '1.8.2',
+            environment: 'production',
+            namespace: 'gateway',
+            tags: ['nginx', 'load-balancer'],
+            description: 'Main API gateway and load balancer'
+          },
+          metrics: { 
+            cpu: 30, 
+            memory: 40, 
+            requests: 5000,
+            responseTime: 25,
+            errorRate: 0.1,
+            uptime: 5184000
+          }
+        },
+        {
+          id: 'user-service',
+          label: 'User Service',
+          x: 600,
+          y: 120,
+          type: 'service',
+          status: 'warning',
+          group: 'backend',
+          metadata: {
+            version: '3.2.1',
+            environment: 'production',
+            namespace: 'user-services',
+            tags: ['nodejs', 'express'],
+            description: 'User authentication and profile management'
+          },
+          metrics: { 
+            cpu: 75, 
+            memory: 85, 
+            requests: 800,
+            responseTime: 300,
+            errorRate: 2.1,
+            uptime: 1728000
+          }
+        },
+        {
+          id: 'order-service',
+          label: 'Order Service',
+          x: 600,
+          y: 280,
+          type: 'service',
+          status: 'healthy',
+          group: 'backend',
+          metadata: {
+            version: '2.5.0',
+            environment: 'production',
+            namespace: 'order-services',
+            tags: ['java', 'spring-boot'],
+            description: 'Order processing and management'
+          },
+          metrics: { 
+            cpu: 40, 
+            memory: 55, 
+            requests: 650,
+            responseTime: 200,
+            errorRate: 0.5,
+            uptime: 3456000
+          }
+        },
+        {
+          id: 'database',
+          label: 'PostgreSQL',
+          x: 850,
+          y: 200,
+          type: 'database',
+          status: 'healthy',
+          group: 'data',
+          metadata: {
+            version: '14.9',
+            environment: 'production',
+            namespace: 'databases',
+            description: 'Primary application database'
+          },
+          metrics: { 
+            cpu: 25, 
+            memory: 70, 
+            requests: 1200,
+            responseTime: 15,
+            errorRate: 0.01,
+            connections: 45
+          }
+        },
+        {
+          id: 'redis-cache',
+          label: 'Redis Cache',
+          x: 850,
+          y: 100,
+          type: 'cache',
+          status: 'healthy',
+          group: 'data',
+          metadata: {
+            version: '7.2.0',
+            environment: 'production',
+            namespace: 'cache',
+            description: 'Distributed cache layer'
+          },
+          metrics: { 
+            cpu: 15, 
+            memory: 35, 
+            requests: 2500,
+            responseTime: 2,
+            errorRate: 0.05
+          }
+        },
+        {
+          id: 'message-queue',
+          label: 'RabbitMQ',
+          x: 600,
+          y: 400,
+          type: 'queue',
+          status: 'healthy',
+          group: 'messaging',
+          metadata: {
+            version: '3.12.0',
+            environment: 'production',
+            namespace: 'messaging',
+            description: 'Async message processing'
+          },
+          metrics: { 
+            cpu: 20, 
+            memory: 45, 
+            requests: 800,
+            responseTime: 5,
+            errorRate: 0.1
+          }
+        }
+      ],
+      edges: [
+        {
+          id: 'frontend-gateway',
+          source: 'frontend',
+          target: 'api-gateway',
+          type: 'http',
+          label: 'HTTPS',
+          weight: 1200,
+          metadata: { protocol: 'HTTPS', port: 443, encrypted: true },
+          metrics: { latency: 50, throughput: 1200, errorRate: 0.2, bandwidth: 1024 }
+        },
+        {
+          id: 'gateway-user',
+          source: 'api-gateway',
+          target: 'user-service',
+          type: 'grpc',
+          label: 'gRPC',
+          weight: 800,
+          metadata: { protocol: 'gRPC', port: 9090, encrypted: true },
+          metrics: { latency: 25, throughput: 800, errorRate: 0.1 }
+        },
+        {
+          id: 'gateway-order',
+          source: 'api-gateway',
+          target: 'order-service',
+          type: 'grpc',
+          label: 'gRPC',
+          weight: 650,
+          metadata: { protocol: 'gRPC', port: 9091, encrypted: true },
+          metrics: { latency: 30, throughput: 650, errorRate: 0.15 }
+        },
+        {
+          id: 'user-db',
+          source: 'user-service',
+          target: 'database',
+          type: 'sql',
+          label: 'PostgreSQL',
+          weight: 400,
+          metadata: { protocol: 'PostgreSQL', port: 5432, encrypted: true },
+          metrics: { latency: 15, throughput: 400, errorRate: 0.02 }
+        },
+        {
+          id: 'user-cache',
+          source: 'user-service',
+          target: 'redis-cache',
+          type: 'tcp',
+          label: 'Redis',
+          weight: 1500,
+          metadata: { protocol: 'Redis', port: 6379, encrypted: false },
+          metrics: { latency: 2, throughput: 1500, errorRate: 0.01 }
+        },
+        {
+          id: 'order-db',
+          source: 'order-service',
+          target: 'database',
+          type: 'sql',
+          label: 'PostgreSQL',
+          weight: 500,
+          metadata: { protocol: 'PostgreSQL', port: 5432, encrypted: true },
+          metrics: { latency: 18, throughput: 500, errorRate: 0.03 }
+        },
+        {
+          id: 'order-queue',
+          source: 'order-service',
+          target: 'message-queue',
+          type: 'message',
+          label: 'AMQP',
+          weight: 300,
+          metadata: { protocol: 'AMQP', port: 5672, encrypted: false },
+          metrics: { latency: 8, throughput: 300, errorRate: 0.05 }
+        }
+      ]
+    };
+  }
+
+  static export(data: ServiceMapData, format: 'json' | 'csv' = 'json'): string {
+    if (format === 'json') {
+      return JSON.stringify(data, null, 2);
+    } else {
+      // CSV export for nodes
+      const nodesCsv = [
+        'id,label,type,status,x,y,cpu,memory,requests',
+        ...data.nodes.map(n => 
+          `${n.id},${n.label},${n.type},${n.status},${n.x},${n.y},${n.metrics?.cpu || 0},${n.metrics?.memory || 0},${n.metrics?.requests || 0}`
+        )
+      ].join('\n');
+      return nodesCsv;
+    }
+  }
+
+  static import(content: string, format: 'json' | 'csv' = 'json'): ServiceMapData | null {
+    try {
+      if (format === 'json') {
+        return JSON.parse(content);
+      }
+      // CSV import implementation would go here
+      return null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+// ====================
+// src/datasource/MockDataProvider.ts
+// ====================
+import { DataSourceConfig, MetricsQuery, MetricsResponse, MetricValue } from '../types';
+
+export class MockDataProvider {
+  private config: DataSourceConfig;
+
+  constructor(config: DataSourceConfig) {
+    this.config = config;
+  }
+
+  async queryMetrics(query: MetricsQuery): Promise<MetricsResponse> {
+    // Simulate API delay
+    await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 200));
+
+    const now = Date.now();
+    const timeSpan = query.timeRange.to.getTime() - query.timeRange.from.getTime();
+    const points = Math.min(100, Math.max(10, timeSpan / (60 * 1000))); // 1 point per minute
+
+    const values: MetricValue[] = [];
+    
+    for (let i = 0; i < points; i++) {
+      const timestamp = query.timeRange.from.getTime() + (i * timeSpan / points);
+      let value: number;
+
+      // Generate realistic metric values based on metric type
+      switch (query.metric) {
+        case 'cpu':
+          value = 20 + Math.random() * 60 + Math.sin(i * 0.1) * 10;
+          break;
+        case 'memory':
+          value = 30 + Math.random() * 50 + Math.sin(i * 0.05) * 15;
+          break;
+        case 'requests':
+          value = 100 + Math.random() * 500 + Math.sin(i * 0.2) * 100;
+          break;
+        case 'latency':
+          value = 10 + Math.random() * 50 + Math.sin(i * 0.15) * 20;
+          break;
+        case 'errorRate':
+          value = Math.random() * 5 + Math.sin(i * 0.3) * 2;
+          break;
+        default:
+          value = Math.random() * 100;
+      }
+
+      values.push({
+        timestamp: Math.floor(timestamp / 1000),
+        value: Math.max(0, value)
+      });
+    }
+
+    return {
+      nodeId: query.nodeId,
+      edgeId: query.edgeId,
+      values,
+      meta: {
+        query: `mock_${query.metric}`,
+        executionTime: 50 + Math.random() * 100
+      }
+    };
+  }
+
+  async getNodeStatus(nodeId: string): Promise<'healthy' | 'warning' | 'error' | 'unknown'> {
+    // Simulate random status with weighted probabilities
+    const rand = Math.random();
+    if (rand < 0.7) return 'healthy';
+    if (rand < 0.9) return 'warning';
+    if (rand < 0.98) return 'error';
+    return 'unknown';
+  }
+}
+
+// ====================
+// src/datasource/ServiceMapDataSource.ts
+// ====================
+import { DataSourceConfig, MetricsQuery, MetricsResponse } from '../types';
+import { MockDataProvider } from './MockDataProvider';
+
+export class ServiceMapDataSource {
+  private config: DataSourceConfig;
+  private provider: MockDataProvider;
+
+  constructor(config: DataSourceConfig) {
+    this.config = config;
+    this.provider = new MockDataProvider(config);
+  }
+
+  async queryMetrics(query: MetricsQuery): Promise<MetricsResponse> {
+    switch (this.config.type) {
+      case 'prometheus':
+        return this.queryPrometheus(query);
+      case 'mock':
+      default:
+        return this.provider.queryMetrics(query);
+    }
+  }
+
+  private async queryPrometheus(query: MetricsQuery): Promise<MetricsResponse> {
+    // Implementation for Prometheus queries
+    const prometheusQuery = this.buildPrometheusQuery(query);
+    
+    try {
+      const response = await fetch(`${this.config.url}/api/v1/query_range`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          ...(this.config.credentials?.token && {
+            'Authorization': `Bearer ${this.config.credentials.token}`
+          })
+        },
+        body: new URLSearchParams({
+          query: prometheusQuery,
+          start: (query.timeRange.from.getTime() / 1000).toString(),
+          end: (query.timeRange.to.getTime() / 1000).toString(),
+          step: '60'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Prometheus query failed: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return this.parsePrometheusResponse(data, query);
+    } catch (error) {
+      console.error('Prometheus query error:', error);
+      // Fallback to mock data
+      return this.provider.queryMetrics(query);
+    }
+  }
+
+  private buildPrometheusQuery(query: MetricsQuery): string {
+    const { metric, nodeId } = query;
+    
+    const metricQueries = {
+      cpu: `rate(cpu_usage_seconds_total{service="${nodeId}"}[5m]) * 100`,
+      memory: `memory_usage_bytes{service="${nodeId}"} / memory_limit_bytes{service="${nodeId}"} * 100`,
+      requests: `rate(http_requests_total{service="${nodeId}"}[1m]) * 60`,
+      latency: `histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{service="${nodeId}"}[5m])) * 1000`,
+      errorRate: `rate(http_requests_total{service="${nodeId}",status=~"5.."}[5m]) / rate(http_requests_total{service="${nodeId}"}[5m]) * 100`
+    };
+
+    return metricQueries[metric as keyof typeof metricQueries] || metric;
+  }
+
+  private parsePrometheusResponse(data: any, query: MetricsQuery): MetricsResponse {
+    const values: any[] = data.data?.result?.[0]?.values || [];
+    
+    return {
+      nodeId: query.nodeId,
+      values: values.map(([timestamp, value]: [number, string]) => ({
+        timestamp,
+        value: parseFloat(value)
+      })),
+      meta: {
+        query: data.data?.query || '',
+        executionTime: 0
+      }
+    };
+  }
+
+  async testConnection(): Promise<boolean> {
+    try {
+      if (this.config.type === 'mock') return true;
+      
+      const response = await fetch(`${this.config.url}/api/v1/label/__name__/values`);
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// ====================
+// src/components/ServiceMap/DragControl.tsx
+// ====================
+import React, { useCallback, useRef } from 'react';
+import { ServiceNode, MapViewport } from '../../types';
+
+interface DragControlProps {
+  nodes: ServiceNode[];
+  viewport: MapViewport;
+  onNodeDrag: (nodeId: string, x: number, y: number) => void;
+  onViewportChange: (viewport: MapViewport) => void;
+  children: React.ReactNode;
+}
+
+interface DragState {
+  isDragging: boolean;
+  dragType: 'node' | 'viewport';
+  dragNodeId?: string;
+  startPos: { x: number; y: number };
+  startViewport?: MapViewport;
+}
+
+export const DragControl: React.FC<DragControlProps> = ({
+  nodes,
+  viewport,
+  onNodeDrag,
+  onViewportChange,
+  children
+}) => {
+  const dragState = useRef<DragState>({
+    isDragging: false,
+    dragType: 'viewport',
+    startPos: { x: 0, y: 0 }
+  });
+
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  const getMousePosition = useCallback((event: MouseEvent | React.MouseEvent): { x: number; y: number } => {
+    if (!svgRef.current) return { x: 0, y: 0 };
+    
+    const rect = svgRef.current.getBoundingClientRect();
+    return {
+      x: (event.clientX - rect.left - viewport.x) / viewport.scale,
+      y: (event.clientY - rect.top - viewport.y) / viewport.scale
+    };
+  }, [viewport]);
+
+  const findNodeAtPosition = useCallback((x: number, y: number): ServiceNode | null => {
+    return nodes.find(node => {
+      const dx = x - node.x;
+      const dy = y - node.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      return distance <= 30; // Node radius
+    }) || null;
+  }, [nodes]);
+
+  const handleMouseDown = useCallback((event: React.MouseEvent<SVGSVGElement>) => {
+    const mousePos = getMousePosition(event);
+    const clickedNode = findNodeAtPosition(mousePos.x, mousePos.y);
+
+    if (clickedNode) {
+      // Start node drag
+      dragState.current = {
+        isDragging: true,
+        dragType: 'node',
+        dragNodeId: clickedNode.id,
+        startPos: mousePos
+      };
+    } else {
+      // Start viewport pan
+      dragState.current = {
+        isDragging: true,
+        dragType: 'viewport',
+        startPos: { x: event.clientX, y: event.clientY },
+        startViewport: { ...viewport }
+      };
+    }
+
+    event.preventDefault();
+  }, [getMousePosition, findNodeAtPosition, viewport]);
+
+  const handleMouseMove = useCallback((event: MouseEvent) => {
+    if (!dragState.current.isDragging) return;
+
+    if (dragState.current.dragType === 'node' && dragState.current.dragNodeId) {
+      const mousePos = getMousePosition(event);
+      onNodeDrag(dragState.current.dragNodeId, mousePos.x, mousePos.y);
+    } else if (dragState.current.dragType === 'viewport' && dragState.current.startViewport) {
+      const dx = event.clientX - dragState.current.startPos.x;
+      const dy = event.clientY - dragState.current.startPos.y;
+      
+      onViewportChange({
+        ...viewport,
+        x: dragState.current.startViewport.x + dx,
+        y: dragState.current.startViewport.y + dy
+      });
+    }
+  }, [getMousePosition, onNodeDrag, onViewportChange, viewport]);
+
+  const handleMouseUp = useCallback(() => {
+    dragState.current.isDragging = false;
+  }, []);
+
+  const handleWheel = useCallback((event: React.WheelEvent<SVGSVGElement>) => {
+    event.preventDefault();
+    
+    const scaleFactor = event.deltaY > 0 ? 0.9 : 1.1;
+    const newScale = Math.max(0.1, Math.min(3, viewport.scale * scaleFactor));
+    
+    if (newScale === viewport.scale) return;
+
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
+
+    const worldX = (mouseX - viewport.x) / viewport.scale;
+    const worldY = (mouseY - viewport.y) / viewport.scale;
+
+    const newX = mouseX - worldX * newScale;
+    const newY = mouseY - worldY * newScale;
+
+    onViewportChange({
+      x: newX,
+      y: newY,
+      scale: newScale
+    });
+  }, [viewport, onViewportChange]);
+
+  React.useEffect(() => {
+    const handleGlobalMouseMove = (event: MouseEvent) => handleMouseMove(event);
+    const handleGlobalMouseUp = () => handleMouseUp();
+
+    if (dragState.current.isDragging) {
+      document.addEventListener('mousemove', handleGlobalMouseMove);
+      document.addEventListener('mouseup', handleGlobalMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleGlobalMouseMove);
+      document.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [handleMouseMove, handleMouseUp]);
+
+  return (
+    <svg
+      ref={svgRef}
+      width="100%"
+      height="100%"
+      onMouseDown={handleMouseDown}
+      onWheel={handleWheel}
+      style={{ cursor: dragState.current.isDragging ? 'grabbing' : 'grab' }}
+    >
+      <g transform={`translate(${viewport.x}, ${viewport.y}) scale(${viewport.scale})`}>
+        {children}
+      </g>
+    </svg>
+  );
+};
+
+// ====================
+// src/components/ServiceMap/ServiceMapLegend.tsx
+// ====================
+import React from 'react';
+import { NODE_TYPES, NODE_STATUS, EDGE_TYPES } from '../../utils/constants';
+import { ServiceMapData } from '../../types';
+import { MapCalculations } from '../../utils/calculations';
+import { MetricsFormatter } from '../../utils/formatters';
+
+interface ServiceMapLegendProps {
+  data: ServiceMapData;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
+}
+
+export const ServiceMapLegend: React.FC<ServiceMapLegendProps> = ({
+  data,
+  isCollapsed = false,
+  onToggleCollapse
+}) => {
+  const stats = {
+    totalNodes: data.nodes.length,
+    totalEdges: data.edges.length,
+    nodesByType: data.nodes.reduce((acc, node) => {
+      acc[node.type] = (acc[node.type] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>),
+    nodesByStatus: data.nodes.reduce((acc, node) => {
+      acc[node.status] = (acc[node.status] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>),
+    criticalPath: MapCalculations.findCriticalPath(data)
+  };
+
+  const avgMetrics = data.nodes.reduce((acc, node) => {
+    if (node.metrics) {
+      acc.cpu += node.metrics.cpu;
+      acc.memory += node.metrics.memory;
+      acc.requests += node.metrics.requests;
+      acc.count++;
+    }
+    return acc;
+  }, { cpu: 0, memory: 0, requests: 0, count: 0 });
+
+  if (avgMetrics.count > 0) {
+    avgMetrics.cpu /= avgMetrics.count;
+    avgMetrics.memory /= avgMetrics.count;
+    avgMetrics.requests /= avgMetrics.count;
+  }
+
+  if (isCollapsed) {
+    return (
+      <div className="legend-collapsed">
+        <button onClick={onToggleCollapse} className="legend-toggle">
+          📊 Legend
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="service-map-legend">
+      <div className="legend-header">
+        <h3>Service Map Legend</h3>
+        <button onClick={onToggleCollapse} className="legend-toggle">
+          ✕
+        </button>
+      </div>
+
+      <div className="legend-section">
+        <h4>Overview</h4>
+        <div className="stats-grid">
+          <div className="stat-item">
+            <span className="stat-label">Services:</span>
+            <span className="stat-value">{stats.totalNodes}</span>
+          </div>
+          <div className="stat-item">
+            <span className="stat-label">Connections:</span>
+            <span className="stat-value">{stats.totalEdges}</span>
+          </div>
+          <div className="stat-item">
+            <span className="stat-label">Avg CPU:</span>
+            <span className="stat-value">{MetricsFormatter.formatPercentage(avgMetrics.cpu)}</span>
+          </div>
+          <div className="stat-item">
+            <span className="stat-label">Avg Memory:</span>
+            <span className="stat-value">{MetricsFormatter.formatPercentage(avgMetrics.memory)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="legend-section">
+        <h4>Node Types</h4>
+        <div className="legend-items">
+          {Object.entries(NODE_TYPES).map(([type, config]) => (
+            <div key={type} className="legend-item">
+              <div 
+                className="legend-color-box"
+                style={{ backgroundColor: config.color }}
+              >
+                {config.icon}
+              </div>
+              <span className="legend-label">{config.label}</span>
+              <span className="legend-count">({stats.nodesByType[type] || 0})</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="legend-section">
+        <h4>Status</h4>
+        <div className="legend-items">
+          {Object.entries(NODE_STATUS).map(([status, config]) => (
+            <div key={status} className="legend-item">
+              <div 
+                className="legend-status-indicator"
+                style={{ backgroundColor: config.color }}
+              />
+              <span className="legend-label">{config.label}</span>
+              <span className="legend-count">({stats.nodesByStatus[status] || 0})</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="legend-section">
+        <h4>Connection Types</h4>
+        <div className="legend-items">
+          {Object.entries(EDGE_TYPES).map(([type, config]) => (
+            <div key={type} className="legend-item">
+              <svg width="30" height="4" className="legend-line">
+                <line
+                  x1="0" y1="2" x2="30" y2="2"
+                  stroke={config.color}
+                  strokeWidth="2"
+                  strokeDasharray={config.strokeDasharray}
+                />
+              </svg>
+              <span className="legend-label">{config.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="legend-section">
+        <h4>Critical Services</h4>
+        <div className="critical-services">
+          {stats.criticalPath.slice(0, 3).map((node, index) => (
+            <div key={node.id} className="critical-service-item">
+              <span className="critical-rank">#{index + 1}</span>
+              <span className="critical-name">{node.label}</span>
+              <span className="critical-metric">
+                {MetricsFormatter.formatPercentage((node.metrics?.cpu || 0) + (node.metrics?.memory || 0))}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="legend-section">
+        <h4>Controls</h4>
+        <div className="controls-help">
+          <div className="control-item">
+            <strong>Click:</strong> Add new node
+          </div>
+          <div className="control-item">
+            <strong>Double-click:</strong> Edit node
+          </div>
+          <div className="control-item">
+            <strong>Drag:</strong> Move node/pan view
+          </div>
+          <div className="control-item">
+            <strong>Scroll:</strong> Zoom in/out
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ====================
+// src/components/ServiceMap/D3ServiceMapRenderer.tsx
+// ====================
+import React, { useRef, useEffect, useCallback } from 'react';
+import * as d3 from 'd3';
+import { ServiceNode, ServiceEdge, D3ServiceMapConfig, MapViewport } from '../../types';
+import { NODE_TYPES, NODE_STATUS, EDGE_TYPES, DEFAULT_CONFIG } from '../../utils/constants';
+
+interface D3ServiceMapRendererProps {
+  nodes: ServiceNode[];
+  edges: ServiceEdge[];
+  viewport: MapViewport;
+  config?: Partial<D3ServiceMapConfig>;
+  onNodeClick?: (node: ServiceNode, event: MouseEvent) => void;
+  onNodeDoubleClick?: (node: ServiceNode, event: MouseEvent) => void;
+  onNodeDrag?: (nodeId: string, x: number, y: number) => void;
+  onCanvasClick?: (x: number, y: number, event: MouseEvent) => void;
+}
+
+interface D3Node extends ServiceNode {
+  fx?: number;
+  fy?: number;
+  vx?: number;
+  vy?: number;
+}
+
+interface D3Edge extends ServiceEdge {
+  source: D3Node;
+  target: D3Node;
+}
+
+export const D3ServiceMapRenderer: React.FC<D3ServiceMapRendererProps> = ({
+  nodes,
+  edges,
+  viewport,
+  config = {},
+  onNodeClick,
+  onNodeDoubleClick,
+  onNodeDrag,
+  onCanvasClick
+}) => {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const simulationRef = useRef<d3.Simulation<D3Node, D3Edge>>();
+  const containerRef = useRef<SVGGElement>(null);
+
+  const fullConfig = { ...DEFAULT_CONFIG, ...config };
+
+  const initializeSimulation = useCallback(() => {
+    if (!svgRef.current) return;
+
+    const simulation = d3.forceSimulation<D3Node>(nodes as D3Node[])
+      .force('link', d3.forceLink<D3Node, D3Edge>(edges as D3Edge[])
+        .id((d: D3Node) => d.id)
+        .distance(fullConfig.linkDistance)
+      )
+      .force('charge', d3.forceManyBody().strength(fullConfig.chargeStrength))
+      .force('center', d3.forceCenter(400, 300))
+      .force('collision', d3.forceCollide().radius(fullConfig.nodeRadius + 5))
+      .alphaDecay(fullConfig.alphaDecay)
+      .velocityDecay(0.4);
+
+    simulationRef.current = simulation;
+    return simulation;
+  }, [nodes, edges, fullConfig]);
+
+  const renderNodes = useCallback(() => {
+    if (!containerRef.current) return;
+
+    const nodeGroup = d3.select(containerRef.current)
+      .selectAll<SVGGElement, D3Node>('.node-group')
+      .data(nodes as D3Node[], (d: D3Node) => d.id);
+
+    // Remove old nodes
+    nodeGroup.exit().remove();
+
+    // Create new node groups
+    const nodeEnter = nodeGroup.enter()
+      .append('g')
+      .attr('class', 'node-group')
+      .style('cursor', 'pointer');
+
+    // Add main circle
+    nodeEnter.append('circle')
+      .attr('class', 'node-circle')
+      .attr('r', fullConfig.nodeRadius);
+
+    // Add status indicator
+    nodeEnter.append('circle')
+      .attr('class', 'node-status')
+      .attr('r', 8)
+      .attr('cx', 20)
+      .attr('cy', -20);
+
+    // Add type icon
+    nodeEnter.append('text')
+      .attr('class', 'node-icon')
+      .attr('text-anchor', 'middle')
+      .attr('dy', '0.35em')
+      .style('font-size', '16px')
+      .style('pointer-events', 'none');
+
+    // Add label
+    nodeEnter.append('text')
+      .attr('class', 'node-label')
+      .attr('text-anchor', 'middle')
+      .attr('y', fullConfig.nodeRadius + 20)
+      .style('font-size', '12px')
+      .style('font-weight', 'bold')
+      .style('pointer-events', 'none');
+
+    // Add metrics text
+    nodeEnter.append('text')
+      .attr('class', 'node-metrics')
+      .attr('text-anchor', 'middle')
+      .attr('y', fullConfig.nodeRadius + 35)
+      .style('font-size', '10px')
+      .style('fill', '#666')
+      .style('pointer-events', 'none');
+
+    // Merge enter and update selections
+    const nodeMerge = nodeEnter.merge(nodeGroup);
+
+    // Update all nodes
+    nodeMerge
+      .attr('transform', (d: D3Node) => `translate(${d.x}, ${d.y})`)
+      .on('click', function(event: MouseEvent, d: D3Node) {
+        event.stopPropagation();
+        onNodeClick?.(d, event);
+      })
+      .on('dblclick', function(event: MouseEvent, d: D3Node) {
+        event.stopPropagation();
+        onNodeDoubleClick?.(d, event);
+      });
+
+    // Update circle styles
+    nodeMerge.select('.node-circle')
+      .attr('fill', (d: D3Node) => NODE_TYPES[d.type]?.color || '#4A90E2')
+      .attr('stroke', (d: D3Node) => NODE_STATUS[d.status]?.color || '#50E3C2')
+      .attr('stroke-width', 3);
+
+    // Update status indicators
+    nodeMerge.select('.node-status')
+      .attr('fill', (d: D3Node) => NODE_STATUS[d.status]?.color || '#50E3C2');
+
+    // Update icons
+    nodeMerge.select('.node-icon')
+      .text((d: D3Node) => NODE_TYPES[d.type]?.icon || '⚡');
+
+    // Update labels
+    nodeMerge.select('.node-label')
+      .text((d: D3Node) => d.label);
+
+    // Update metrics
+    nodeMerge.select('.node-metrics')
+      .text((d: D3Node) => 
+        d.metrics ? `CPU: ${d.metrics.cpu}% | Mem: ${d.metrics.memory}%` : ''
+      );
+
+    return nodeMerge;
+  }, [nodes, fullConfig, onNodeClick, onNodeDoubleClick]);
+
+  const renderEdges = useCallback(() => {
+    if (!containerRef.current) return;
+
+    const edgeGroup = d3.select(containerRef.current)
+      .selectAll<SVGLineElement, D3Edge>('.edge-line')
+      .data(edges as D3Edge[], (d: D3Edge) => d.id);
+
+    // Remove old edges
+    edgeGroup.exit().remove();
+
+    // Create new edges
+    const edgeEnter = edgeGroup.enter()
+      .append('line')
+      .attr('class', 'edge-line')
+      .attr('marker-end', 'url(#arrowhead)');
+
+    // Merge and update
+    const edgeMerge = edgeEnter.merge(edgeGroup);
+
+    edgeMerge
+      .attr('x1', (d: D3Edge) => d.source.x)
+      .attr('y1', (d: D3Edge) => d.source.y)
+      .attr('x2', (d: D3Edge) => d.target.x)
+      .attr('y2', (d: D3Edge) => d.target.y)
+      .attr('stroke', (d: D3Edge) => EDGE_TYPES[d.type]?.color || '#666')
+      .attr('stroke-width', (d: D3Edge) => Math.max(1, Math.log(d.weight || 1)))
+      .attr('stroke-dasharray', (d: D3Edge) => EDGE_TYPES[d.type]?.strokeDasharray || 'none')
+      .style('opacity', 0.8);
+
+    return edgeMerge;
+  }, [edges]);
+
+  const setupDragBehavior = useCallback((nodeSelection: d3.Selection<SVGGElement, D3Node, SVGGElement, unknown>) => {
+    const drag = d3.drag<SVGGElement, D3Node>()
+      .on('start', function(event: d3.D3DragEvent<SVGGElement, D3Node, unknown>, d: D3Node) {
+        if (!event.active && simulationRef.current) {
+          simulationRef.current.alphaTarget(0.3).restart();
+        }
+        d.fx = d.x;
+        d.fy = d.y;
+      })
+      .on('drag', function(event: d3.D3DragEvent<SVGGElement, D3Node, unknown>, d: D3Node) {
+        d.fx = event.x;
+        d.fy = event.y;
+        onNodeDrag?.(d.id, event.x, event.y);
+      })
+      .on('end', function(event: d3.D3DragEvent<SVGGElement, D3Node, unknown>, d: D3Node) {
+        if (!event.active && simulationRef.current) {
+          simulationRef.current.alphaTarget(0);
+        }
+        d.fx = null;
+        d.fy = null;
+      });
+
+    nodeSelection.call(drag);
+  }, [onNodeDrag]);
+
+  useEffect(() => {
+    if (!svgRef.current || !containerRef.current) return;
+
+    // Initialize D3 simulation
+    const simulation = initializeSimulation();
+    if (!simulation) return;
+
+    // Create marker for arrow heads
+    const svg = d3.select(svgRef.current);
+    
+    let defs = svg.select('defs');
+    if (defs.empty()) {
+      defs = svg.append('defs');
+    }
+
+    defs.selectAll('marker').remove();
+    defs.append('marker')
+      .attr('id', 'arrowhead')
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 25)
+      .attr('refY', 0)
+      .attr('orient', 'auto')
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .append('path')
+      .attr('d', 'M0,-5L10,0L0,5')
+      .attr('fill', '#666');
+
+    // Render initial elements
+    const nodeSelection = renderNodes();
+    const edgeSelection = renderEdges();
+
+    if (nodeSelection) {
+      setupDragBehavior(nodeSelection);
+    }
+
+    // Set up simulation tick handler
+    simulation.on('tick', () => {
+      if (edgeSelection) {
+        edgeSelection
+          .attr('x1', (d: D3Edge) => d.source.x)
+          .attr('y1', (d: D3Edge) => d.source.y)
+          .attr('x2', (d: D3Edge) => d.target.x)
+          .attr('y2', (d: D3Edge) => d.target.y);
+      }
+
+      if (nodeSelection) {
+        nodeSelection.attr('transform', (d: D3Node) => `translate(${d.x}, ${d.y})`);
+      }
+    });
+
+    // Handle canvas clicks
+    svg.on('click', function(event: MouseEvent) {
+      if (event.target === this && onCanvasClick) {
+        const [x, y] = d3.pointer(event, this);
+        const adjustedX = (x - viewport.x) / viewport.scale;
+        const adjustedY = (y - viewport.y) / viewport.scale;
+        onCanvasClick(adjustedX, adjustedY, event);
+      }
+    });
+
+    return () => {
+      simulation.stop();
+    };
+  }, [nodes, edges, viewport, initializeSimulation, renderNodes, renderEdges, setupDragBehavior, onCanvasClick]);
+
+  return (
+    <svg
+      ref={svgRef}
+      width="100%"
+      height="100%"
+      className="d3-service-map"
+    >
+      <g
+        ref={containerRef}
+        transform={`translate(${viewport.x}, ${viewport.y}) scale(${viewport.scale})`}
+      />
+    </svg>
+  );
+};
+
+// ====================
+// src/components/ServiceMap/EnhancedServiceMapVisualization.tsx
+// ====================
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { ServiceMapData, ServiceNode, MapViewport, LayoutConfiguration } from '../../types';
+import { D3ServiceMapRenderer } from './D3ServiceMapRenderer';
+import { DragControl } from './DragControl';
+import { ServiceMapLegend } from './ServiceMapLegend';
+import { NodeEditor } from './NodeEditor';
+import { ServiceMapDataSource } from '../../datasource/ServiceMapDataSource';
+import { MapCalculations } from '../../utils/calculations';
+
+interface EnhancedServiceMapVisualizationProps {
+  data: ServiceMapData;
+  onDataChange: (data: ServiceMapData) => void;
+  dataSource?: ServiceMapDataSource;
+  height?: number;
+  showLegend?: boolean;
+  enableAutoLayout?: boolean;
+}
+
+export const EnhancedServiceMapVisualization: React.FC<EnhancedServiceMapVisualizationProps> = ({
+  data,
+  onDataChange,
+  dataSource,
+  height = 600,
+  showLegend = true,
+  enableAutoLayout = true
+}) => {
+  const [viewport, setViewport] = useState<MapViewport>({ x: 0, y: 0, scale: 1 });
+  const [selectedNode, setSelectedNode] = useState<ServiceNode | null>(null);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [isLegendCollapsed, setIsLegendCollapsed] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [layoutAlgorithm, setLayoutAlgorithm] = useState<LayoutConfiguration['algorithm']>('force');
+  
+  const refreshIntervalRef = useRef<NodeJS.Timeout>();
+
+  // Auto-refresh metrics
+  useEffect(() => {
+    if (!dataSource) return;
+
+    const refreshMetrics = async () => {
+      setIsLoading(true);
+      try {
+        const updatedNodes = await Promise.all(
+          data.nodes.map(async (node) => {
+            try {
+              const status = await dataSource.provider.getNodeStatus(node.id);
+              return { ...node, status };
+            } catch {
+              return node;
+            }
+          })
+        );
+
+        onDataChange({
+          ...data,
+          nodes: updatedNodes
+        });
+      } catch (error) {
+        console.error('Failed to refresh metrics:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    refreshMetrics();
+    refreshIntervalRef.current = setInterval(refreshMetrics, 30000); // 30 seconds
+
+    return () => {
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+      }
+    };
+  }, [data, dataSource, onDataChange]);
+
+  const handleNodeClick = useCallback((node: ServiceNode, event: MouseEvent) => {
+    console.log('Node clicked:', node.label);
+  }, []);
+
+  const handleNodeDoubleClick = useCallback((node: ServiceNode, event: MouseEvent) => {
+    setSelectedNode(node);
+    setIsEditorOpen(true);
+  }, []);
+
+  const handleNodeDrag = useCallback((nodeId: string, x: number, y: number) => {
+    const updatedData = { ...data };
+    updatedData.nodes = data.nodes.map(node =>
+      node.id === nodeId ? { ...node, x, y } : node
+    );
+    onDataChange(updatedData);
+  }, [data, onDataChange]);
+
+  const handleCanvasClick = useCallback((x: number, y: number, event: MouseEvent) => {
+    setSelectedNode({
+      id: '',
+      label: '',
+      x,
+      y,
+      type: 'service',
+      status: 'healthy',
+      metrics: { cpu: 0, memory: 0, requests: 0 }
+    });
+    setIsEditorOpen(true);
+  }, []);
+
+  const handleSaveNode = useCallback((nodeData: ServiceNode) => {
+    const updatedData = { ...data };
+    
+    if (selectedNode && selectedNode.id && data.nodes.find(n => n.id === selectedNode.id)) {
+      // Update existing node
+      updatedData.nodes = data.nodes.map(n => n.id === nodeData.id ? nodeData : n);
+    } else {
+      // Add new node
+      if (!nodeData.id) {
+        nodeData.id = MapCalculations.generateNodeId();
+      }
+      
+      if (data.nodes.find(n => n.id === nodeData.id)) {
+        alert('Node ID already exists!');
+        return;
+      }
+      updatedData.nodes = [...data.nodes, nodeData];
+    }
+    
+    onDataChange(updatedData);
+    setIsEditorOpen(false);
+    setSelectedNode(null);
+  }, [data, selectedNode, onDataChange]);
+
+  const handleDeleteNode = useCallback((nodeId: string) => {
+    const updatedData = { ...data };
+    updatedData.nodes = data.nodes.filter(n => n.id !== nodeId);
+    updatedData.edges = data.edges.filter(e => e.source !== nodeId && e.target !== nodeId);
+    onDataChange(updatedData);
+  }, [data, onDataChange]);
+
+  const applyAutoLayout = useCallback(() => {
+    if (!enableAutoLayout) return;
+
+    const updatedData = { ...data };
+    const bounds = MapCalculations.calculateMapBounds(data.nodes);
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerY = (bounds.minY + bounds.maxY) / 2;
+
+    switch (layoutAlgorithm) {
+      case 'circular':
+        const radius = Math.min(200, Math.max(100, data.nodes.length * 20));
+        updatedData.nodes = data.nodes.map((node, index) => {
+          const angle = (index / data.nodes.length) * 2 * Math.PI;
+          return {
+            ...node,
+            x: centerX + Math.cos(angle) * radius,
+            y: centerY + Math.sin(angle) * radius
+          };
+        });
+        break;
+        
+      case 'hierarchical':
+        const levels = new Map<string, number>();
+        const processedNodes = new Set<string>();
+        
+        // Simple hierarchical layout - find root nodes and arrange in levels
+        const rootNodes = data.nodes.filter(node => 
+          !data.edges.some(edge => edge.target === node.id)
+        );
+        
+        let currentLevel = 0;
+        let nodesToProcess = [...rootNodes];
+        
+        while (nodesToProcess.length > 0 && currentLevel < 10) {
+          nodesToProcess.forEach(node => {
+            levels.set(node.id, currentLevel);
+            processedNodes.add(node.id);
+          });
+          
+          const nextLevel = data.edges
+            .filter(edge => 
+              nodesToProcess.some(node => node.id === edge.source) &&
+              !processedNodes.has(edge.target)
+            )
+            .map(edge => data.nodes.find(node => node.id === edge.target))
+            .filter((node): node is ServiceNode => node !== undefined);
+          
+          nodesToProcess = nextLevel;
+          currentLevel++;
+        }
+        
+        updatedData.nodes = data.nodes.map((node, index) => {
+          const level = levels.get(node.id) ?? 0;
+          const nodesInLevel = Array.from(levels.values()).filter(l => l === level).length;
+          const positionInLevel = Array.from(levels.entries())
+            .filter(([_, l]) => l === level)
+            .findIndex(([id]) => id === node.id);
+          
+          return {
+            ...node,
+            x: 100 + level * 200,
+            y: 100 + (positionInLevel * 120) - (nodesInLevel * 60 / 2)
+          };
+        });
+        break;
+    }
+
+    onDataChange(updatedData);
+  }, [data, layoutAlgorithm, enableAutoLayout, onDataChange]);
+
+  const resetViewport = useCallback(() => {
+    const bounds = MapCalculations.calculateMapBounds(data.nodes);
+    const padding = 100;
+    const containerWidth = 800;
+    const containerHeight = height;
+    
+    const contentWidth = bounds.maxX - bounds.minX + padding * 2;
+    const contentHeight = bounds.maxY - bounds.minY + padding * 2;
+    
+    const scaleX = containerWidth / contentWidth;
+    const scaleY = containerHeight / contentHeight;
+    const scale = Math.min(scaleX, scaleY, 1);
+    
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerY = (bounds.minY + bounds.maxY) / 2;
+    
+    setViewport({
+      x: containerWidth / 2 - centerX * scale,
+      y: containerHeight / 2 - centerY * scale,
+      scale
+    });
+  }, [data.nodes, height]);
+
+  const handleExportImage = useCallback(() => {
+    const svg = document.querySelector('.d3-service-map') as SVGSVGElement;
+    if (!svg) return;
+
+    const serializer = new XMLSerializer();
+    const svgString = serializer.serializeToString(svg);
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx?.drawImage(img, 0, 0);
+      
+      const link = document.createElement('a');
+      link.download = 'service-map.png';
+      link.href = canvas.toDataURL();
+      link.click();
+    };
+    
+    img.src = 'data:image/svg+xml;base64,' + btoa(svgString);
+  }, []);
+
+  return (
+    <div className="enhanced-service-map">
+      <div className="service-map-toolbar">
+        <div className="toolbar-group">
+          <button 
+            onClick={() => {
+              setSelectedNode({
+                id: '',
+                label: '',
+                x: 400,
+                y: 300,
+                type: 'service',
+                status: 'healthy',
+                metrics: { cpu: 0, memory: 0, requests: 0 }
+              });
+              setIsEditorOpen(true);
+            }}
+            className="btn-primary"
+          >
+            ➕ Add Node
+          </button>
+          
+          <select 
+            value={layoutAlgorithm}
+            onChange={(e) => setLayoutAlgorithm(e.target.value as LayoutConfiguration['algorithm'])}
+            className="layout-selector"
+          >
+            <option value="force">Force Layout</option>
+            <option value="hierarchical">Hierarchical</option>
+            <option value="circular">Circular</option>
+            <option value="manual">Manual</option>
+          </select>
+          
+          <button onClick={applyAutoLayout} className="btn-secondary">
+            🔄 Apply Layout
+          </button>
+        </div>
+
+        <div className="toolbar-group">
+          <button onClick={resetViewport} className="btn-secondary">
+            🎯 Fit to View
+          </button>
+          
+          <button onClick={handleExportImage} className="btn-secondary">
+            📷 Export PNG
+          </button>
+          
+          <button 
+            onClick={() => setIsLegendCollapsed(!isLegendCollapsed)}
+            className="btn-secondary"
+          >
+            {isLegendCollapsed ? '📊 Show' : '📊 Hide'} Legend
+          </button>
+          
+          {isLoading && (
+            <div className="loading-indicator">
+              <span className="spinner">⟳</span> Refreshing...
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="service-map-content" style={{ height }}>
+        <div className="map-container">
+          <D3ServiceMapRenderer
+            nodes={data.nodes}
+            edges={data.edges}
+            viewport={viewport}
+            onNodeClick={handleNodeClick}
+            onNodeDoubleClick={handleNodeDoubleClick}
+            onNodeDrag={handleNodeDrag}
+            onCanvasClick={handleCanvasClick}
+          />
+          
+          <div className="viewport-controls">
+            <button 
+              onClick={() => setViewport(v => ({ ...v, scale: Math.min(3, v.scale * 1.2) }))}
+              className="zoom-btn"
+            >
+              🔍+
+            </button>
+            <span className="zoom-level">{Math.round(viewport.scale * 100)}%</span>
+            <button 
+              onClick={() => setViewport(v => ({ ...v, scale: Math.max(0.1, v.scale * 0.8) }))}
+              className="zoom-btn"
+            >
+              🔍-
+            </button>
+          </div>
+        </div>
+
+        {showLegend && (
+          <ServiceMapLegend
+            data={data}
+            isCollapsed={isLegendCollapsed}
+            onToggleCollapse={() => setIsLegendCollapsed(!isLegendCollapsed)}
+          />
+        )}
+      </div>
+
+      <NodeEditor
+        node={selectedNode}
+        onSave={handleSaveNode}
+        onDelete={selectedNode?.id ? () => handleDeleteNode(selectedNode.id) : undefined}
+        onCancel={() => {
+          setIsEditorOpen(false);
+          setSelectedNode(null);
+        }}
+        isOpen={isEditorOpen}
+      />
+    </div>
+  );
+};
+
+// ====================
+// src/components/ServiceMap/NodeEditor.tsx
+// ====================
+import React, { useState, useEffect } from 'react';
+import { ServiceNode, NodeType, NodeStatus } from '../../types';
+import { NODE_TYPES, NODE_STATUS } from '../../utils/constants';
+import { MetricsFormatter } from '../../utils/formatters';
+
+interface NodeEditorProps {
+  node?: ServiceNode | null;
+  onSave: (node: ServiceNode) => void;
+  onDelete?: () => void;
+  onCancel: () => void;
+  isOpen: boolean;
+}
+
+export const NodeEditor: React.FC<NodeEditorProps> = ({
+  node,
+  onSave,
+  onDelete,
+  onCancel,
+  isOpen
+}) => {
+  const [formData, setFormData] = useState<Partial<ServiceNode>>({});
+  const [activeTab, setActiveTab] = useState<'basic' | 'metadata' | 'metrics'>('basic');
+
+  useEffect(() => {
+    if (node) {
+      setFormData({
+        id: node.id || '',
+        label: node.label || '',
+        type: node.type || 'service',
+        status: node.status || 'healthy',
+        x: node.x || 0,
+        y: node.y || 0,
+        group: node.group || '',
+        metadata: node.metadata || {
+          version: '',
+          environment: 'production',
+          namespace: '',
+          tags: [],
+          description: '',
+          owner: ''
+        },
+        metrics: node.metrics || { 
+          cpu: 0, 
+          memory: 0, 
+          requests: 0,
+          responseTime: 0,
+          errorRate: 0,
+          uptime: 0
+        }
+      });
+    }
+  }, [node]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.id || !formData.label) return;
+
+    onSave(formData as ServiceNode);
+  };
+
+  const updateMetadata = (key: string, value: any) => {
+    setFormData(prev => ({
+      ...prev,
+      metadata: {
+        ...prev.metadata,
+        [key]: value
+      }
+    }));
+  };
+
+  const updateMetrics = (key: string, value: number) => {
+    setFormData(prev => ({
+      ...prev,
+      metrics: {
+        ...prev.metrics,
+        [key]: value
+      }
+    }));
+  };
+
+  const addTag = (tag: string) => {
+    if (!tag.trim()) return;
+    const currentTags = formData.metadata?.tags || [];
+    if (!currentTags.includes(tag)) {
+      updateMetadata('tags', [...currentTags, tag]);
+    }
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    const currentTags = formData.metadata?.tags || [];
+    updateMetadata('tags', currentTags.filter(tag => tag !== tagToRemove));
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="node-editor-overlay">
+      <div className="node-editor">
+        <div className="editor-header">
+          <h3>{node?.id ? 'Edit Node' : 'Add New Node'}</h3>
+          <button onClick={onCancel} className="close-btn">✕</button>
+        </div>
+
+        <div className="editor-tabs">
+          <button 
+            className={activeTab === 'basic' ? 'tab active' : 'tab'}
+            onClick={() => setActiveTab('basic')}
+          >
+            Basic
+          </button>
+          <button 
+            className={activeTab === 'metadata' ? 'tab active' : 'tab'}
+            onClick={() => setActiveTab('metadata')}
+          >
+            Metadata
+          </button>
+          <button 
+            className={activeTab === 'metrics' ? 'tab active' : 'tab'}
+            onClick={() => setActiveTab('metrics')}
+          >
+            Metrics
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="editor-form">
+          {activeTab === 'basic' && (
+            <div className="tab-content">
+              <div className="form-group">
+                <label>ID:</label>
+                <input
+                  type="text"
+                  value={formData.id || ''}
+                  onChange={(e) => setFormData({...formData, id: e.target.value})}
+                  required
+                  disabled={!!node?.id}
+                  placeholder="unique-service-id"
+                />
+              </div>
+              
+              <div className="form-group">
+                <label>Label:</label>
+                <input
+                  type="text"
+                  value={formData.label || ''}
+                  onChange={(e) => setFormData({...formData, label: e.target.value})}
+                  required
+                  placeholder="Service Display Name"
+                />
+              </div>
+              
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Type:</label>
+                  <select
+                    value={formData.type || 'service'}
+                    onChange={(e) => setFormData({...formData, type: e.target.value as NodeType})}
+                  >
+                    {Object.entries(NODE_TYPES).map(([type, config]) => (
+                      <option key={type} value={type}>
+                        {config.icon} {config.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="form-group">
+                  <label>Status:</label>
+                  <select
+                    value={formData.status || 'healthy'}
+                    onChange={(e) => setFormData({...formData, status: e.target.value as NodeStatus})}
+                  >
+                    {Object.entries(NODE_STATUS).map(([status, config]) => (
+                      <option key={status} value={status}>
+                        {config.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Group:</label>
+                <input
+                  type="text"
+                  value={formData.group || ''}
+                  onChange={(e) => setFormData({...formData, group: e.target.value})}
+                  placeholder="backend, frontend, data, etc."
+                />
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>X Position:</label>
+                  <input
+                    type="number"
+                    value={formData.x || 0}
+                    onChange={(e) => setFormData({...formData, x: parseInt(e.target.value)})}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Y Position:</label>
+                  <input
+                    type="number"
+                    value={formData.y || 0}
+                    onChange={(e) => setFormData({...formData, y: parseInt(e.target.value)})}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'metadata' && (
+            <div className="tab-content">
+              <div className="form-group">
+                <label>Version:</label>
+                <input
+                  type="text"
+                  value={formData.metadata?.version || ''}
+                  onChange={(e) => updateMetadata('version', e.target.value)}
+                  placeholder="1.0.0"
+                />
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Environment:</label>
+                  <select
+                    value={formData.metadata?.environment || 'production'}
+                    onChange={(e) => updateMetadata('environment', e.target.value)}
+                  >
+                    <option value="development">Development</option>
+                    <option value="staging">Staging</option>
+                    <option value="production">Production</option>
+                  </select>
+                </div>
+                
+                <div className="form-group">
+                  <label>Namespace:</label>
+                  <input
+                    type="text"
+                    value={formData.metadata?.namespace || ''}
+                    onChange={(e) => updateMetadata('namespace', e.target.value)}
+                    placeholder="service-namespace"
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Description:</label>
+                <textarea
+                  value={formData.metadata?.description || ''}
+                  onChange={(e) => updateMetadata('description', e.target.value)}
+                  rows={3}
+                  placeholder="Brief description of the service"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Owner:</label>
+                <input
+                  type="text"
+                  value={formData.metadata?.owner || ''}
+                  onChange={(e) => updateMetadata('owner', e.target.value)}
+                  placeholder="Team or person responsible"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Tags:</label>
+                <div className="tags-input">
+                  <div className="tags-list">
+                    {(formData.metadata?.tags || []).map((tag, index) => (
+                      <span key={index} className="tag">
+                        {tag}
+                        <button type="button" onClick={() => removeTag(tag)}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Add tag and press Enter"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addTag((e.target as HTMLInputElement).value);
+                        (e.target as HTMLInputElement).value = '';
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'metrics' && (
+            <div className="tab-content">
+              <div className="form-row">
+                <div className="form-group">
+                  <label>CPU Usage (%):</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={formData.metrics?.cpu || 0}
+                    onChange={(e) => updateMetrics('cpu', parseFloat(e.target.value))}
+                  />
+                </div>
+                
+                <div className="form-group">
+                  <label>Memory Usage (%):</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={formData.metrics?.memory || 0}
+                    onChange={(e) => updateMetrics('memory', parseFloat(e.target.value))}
+                  />
+                </div>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Requests/min:</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={formData.metrics?.requests || 0}
+                    onChange={(e) => updateMetrics('requests', parseFloat(e.target.value))}
+                  />
+                </div>
+                
+                <div className="form-group">
+                  <label>Response Time (ms):</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={formData.metrics?.responseTime || 0}
+                    onChange={(e) => updateMetrics('responseTime', parseFloat(e.target.value))}
+                  />
+                </div>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Error Rate (%):</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    value={formData.metrics?.errorRate || 0}
+                    onChange={(e) => updateMetrics('errorRate', parseFloat(e.target.value))}
+                  />
+                </div>
+                
+                <div className="form-group">
+                  <label>Uptime (seconds):</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={formData.metrics?.uptime || 0}
+                    onChange={(e) => updateMetrics('uptime', parseFloat(e.target.value))}
+                  />
+                  <small>
+                    {formData.metrics?.uptime ? 
+                      MetricsFormatter.formatUptime(formData.metrics.uptime) : 
+                      'No uptime data'
+                    }
+                  </small>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Connections:</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={formData.metrics?.connections || 0}
+                  onChange={(e) => updateMetrics('connections', parseFloat(e.target.value))}
+                />
+              </div>
+            </div>
+          )}
+          
+          <div className="form-actions">
+            <button type="submit" className="btn-primary">
+              💾 Save
+            </button>
+            {onDelete && (
+              <button type="button" onClick={onDelete} className="btn-danger">
+                🗑️ Delete
+              </button>
+            )}
+            <button type="button" onClick={onCancel} className="btn-secondary">
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ====================
+// src/components/ServiceMap/index.ts
+// ====================
+export { D3ServiceMapRenderer } from './D3ServiceMapRenderer';
+export { DragControl } from './DragControl';
+export { EnhancedServiceMapVisualization } from './EnhancedServiceMapVisualization';
+export { ServiceMapLegend } from './ServiceMapLegend';
+export { NodeEditor } from './NodeEditor';
+
+// ====================
+// src/styles/servicemap.css
+// ====================
+.enhanced-service-map {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #fafafa;
+}
+
+.service-map-toolbar {
+  background: white;
+  border-bottom: 1px solid #e1e5e9;
+  padding: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.btn-primary {
+  background: #ff6b35;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn-primary:hover {
+  background: #e55a2b;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(255, 107, 53, 0.3);
+}
+
+.btn-secondary {
+  background: #f7f8fa;
+  color: #333;
+  border: 1px solid #d1d5da;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary:hover {
+  background: #e1e5e9;
+  border-color: #c6cbd1;
+}
+
+.btn-danger {
+  background: #d73a49;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.btn-danger:hover {
+  background: #cb2431;
+}
+
+.layout-selector {
+  padding: 0.5rem;
+  border: 1px solid #d1d5da;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: white;
+}
+
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #586069;
+  font-size: 0.9rem;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.service-map-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.map-container {
+  flex: 1;
+  position: relative;
+  background: #fafafa;
+  border-right: 1px solid #e1e5e9;
+}
+
+.d3-service-map {
+  width: 100%;
+  height: 100%;
+}
+
+.viewport-controls {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background: white;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  padding: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.zoom-btn {
+  background: #f7f8fa;
+  border: 1px solid #d1d5da;
+  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.zoom-btn:hover {
+  background: #e1e5e9;
+}
+
+.zoom-level {
+  font-size: 0.8rem;
+  color: #586069;
+  min-width: 40px;
+  text-align: center;
+}
+
+/* Legend Styles */
+.service-map-legend {
+  width: 300px;
+  background: white;
+  border-left: 1px solid #e1e5e9;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.legend-collapsed {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 10;
+}
+
+.legend-header {
+  padding: 1rem;
+  border-bottom: 1px solid #e1e5e9;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f7f8fa;
+}
+
+.legend-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #24292e;
+}
+
+.legend-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: #586069;
+  padding: 0.25rem;
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+
+.legend-toggle:hover {
+  background: #e1e5e9;
+}
+
+.legend-section {
+  padding: 1rem;
+  border-bottom: 1px solid #f1f3f4;
+}
+
+.legend-section h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #24292e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.stat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items
