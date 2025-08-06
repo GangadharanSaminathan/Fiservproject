@@ -1,0 +1,866 @@
+// ====================
+// src/scenes/ServiceMapScene.ts - Complete Implementation
+// ====================
+import React from 'react';
+import {
+  SceneApp,
+  SceneAppPage,
+  EmbeddedScene,
+  SceneFlexLayout,
+  SceneFlexItem,
+  VizPanel,
+  SceneReactObject,
+  SceneTimePicker,
+  SceneRefreshPicker,
+  SceneControlsSpacer,
+  SceneVariable,
+  ConstantVariable,
+  CustomVariable,
+  DataSourceVariable,
+  SceneVariableSet,
+  SceneDataTransformer,
+  SceneQueryRunner
+} from '@grafana/scenes';
+import { PanelBuilders, SceneDataState } from '@grafana/scenes';
+import { ServiceMapData, DataSourceConfig, ServiceNode } from '../types';
+import { ServiceMapStorage } from '../utils/storage';
+import { ServiceMapDataSource } from '../datasource/ServiceMapDataSource';
+import { ServiceMapWrapper } from '../components/ServiceMap/ServiceMapWrapper';
+
+/**
+ * ServiceMapScene - Main scene orchestrator for Grafana Scenes integration
+ * Provides comprehensive service map visualization with supporting panels
+ */
+export class ServiceMapScene {
+  /**
+   * Creates the main service map scene with panels and controls
+   */
+  static createScene(config?: Partial<DataSourceConfig>): SceneApp {
+    const mapData = ServiceMapStorage.load();
+    
+    const dataSourceConfig: DataSourceConfig = {
+      url: config?.url || process.env.REACT_APP_PROMETHEUS_URL || 'http://localhost:9090',
+      type: config?.type || (process.env.REACT_APP_DATASOURCE_TYPE as any) || 'mock',
+      refreshInterval: config?.refreshInterval || parseInt(process.env.REACT_APP_REFRESH_INTERVAL || '30000'),
+      credentials: config?.credentials
+    };
+
+    const dataSource = new ServiceMapDataSource(dataSourceConfig);
+
+    // Create variables for dynamic filtering
+    const variables = new SceneVariableSet({
+      variables: [
+        new CustomVariable({
+          name: 'environment',
+          label: 'Environment',
+          value: 'production',
+          options: [
+            { label: 'Production', value: 'production' },
+            { label: 'Staging', value: 'staging' },
+            { label: 'Development', value: 'development' }
+          ]
+        }),
+        new CustomVariable({
+          name: 'service_type',
+          label: 'Service Type',
+          value: 'all',
+          options: [
+            { label: 'All', value: 'all' },
+            { label: 'Service', value: 'service' },
+            { label: 'Database', value: 'database' },
+            { label: 'Queue', value: 'queue' },
+            { label: 'Gateway', value: 'gateway' },
+            { label: 'Cache', value: 'cache' }
+          ]
+        }),
+        new ConstantVariable({
+          name: 'refresh_interval',
+          label: 'Refresh Interval',
+          value: '30s'
+        })
+      ]
+    });
+
+    // Main service map component with proper React wrapper
+    const serviceMapComponent = new SceneReactObject({
+      reactNode: ServiceMapWrapper,
+      props: {
+        dataSource,
+        initialData: mapData,
+        height: 600,
+        showLegend: true,
+        enableAutoLayout: true,
+        onServiceSelect: (serviceId: string) => {
+          // Navigate to service detail view
+          console.log('Service selected:', serviceId);
+        }
+      }
+    });
+
+    // Service Health Overview Panel
+    const healthPanel = this.createHealthOverviewPanel();
+    
+    // Response Time Panel
+    const responseTimePanel = this.createResponseTimePanel();
+    
+    // Throughput Panel  
+    const throughputPanel = this.createThroughputPanel();
+    
+    // Error Rate Panel
+    const errorRatePanel = this.createErrorRatePanel();
+
+    // Service Dependencies Panel
+    const dependenciesPanel = this.createDependenciesPanel();
+
+    // SLA Overview Panel
+    const slaPanel = this.createSLAPanel();
+
+    // Alert Summary Panel
+    const alertsPanel = this.createAlertsPanel();
+
+    // Top Services by Resource Usage
+    const topServicesPanel = this.createTopServicesPanel();
+
+    // Create main layout with service map and supporting panels
+    const layout = new SceneFlexLayout({
+      direction: 'column',
+      children: [
+        // Main service map section
+        new SceneFlexItem({
+          minHeight: 600,
+          body: serviceMapComponent
+        }),
+        
+        // Metrics overview section
+        new SceneFlexItem({
+          minHeight: 250,
+          body: new SceneFlexLayout({
+            direction: 'row',
+            children: [
+              new SceneFlexItem({
+                width: '25%',
+                body: healthPanel
+              }),
+              new SceneFlexItem({
+                width: '25%', 
+                body: responseTimePanel
+              }),
+              new SceneFlexItem({
+                width: '25%',
+                body: throughputPanel
+              }),
+              new SceneFlexItem({
+                width: '25%',
+                body: errorRatePanel
+              })
+            ]
+          })
+        }),
+
+        // Additional metrics section
+        new SceneFlexItem({
+          minHeight: 200,
+          body: new SceneFlexLayout({
+            direction: 'row',
+            children: [
+              new SceneFlexItem({
+                width: '33%',
+                body: dependenciesPanel
+              }),
+              new SceneFlexItem({
+                width: '33%',
+                body: slaPanel
+              }),
+              new SceneFlexItem({
+                width: '34%',
+                body: alertsPanel
+              })
+            ]
+          })
+        }),
+
+        // Resource usage section
+        new SceneFlexItem({
+          minHeight: 200,
+          body: topServicesPanel
+        })
+      ]
+    });
+
+    // Create the embedded scene with controls
+    const scene = new EmbeddedScene({
+      $variables: variables,
+      body: layout,
+      controls: [
+        new SceneTimePicker({
+          from: 'now-6h',
+          to: 'now'
+        }),
+        new SceneRefreshPicker({
+          intervals: ['5s', '10s', '30s', '1m', '5m', '15m'],
+          value: '30s'
+        }),
+        new SceneControlsSpacer()
+      ]
+    });
+
+    // Create the app page
+    const page = new SceneAppPage({
+      title: 'Service Map Overview',
+      url: '/a/servicemap-app/overview',
+      hideFromBreadcrumbs: false,
+      getScene: () => scene
+    });
+
+    const detailPage = new SceneAppPage({
+      title: 'Service Details',
+      url: '/a/servicemap-app/service/:serviceId',
+      hideFromBreadcrumbs: false,
+      getScene: (routeMatch) => {
+        const serviceId = routeMatch?.params?.serviceId as string;
+        return this.createServiceDetailsScene(serviceId || '', mapData);
+      }
+    });
+
+    return new SceneApp({
+      pages: [page, detailPage]
+    });
+  }
+
+  /**
+   * Creates a detailed scene for a specific service
+   */
+  static createServiceDetailsScene(serviceId: string, data: ServiceMapData): EmbeddedScene {
+    const serviceNode = data.nodes.find(n => n.id === serviceId);
+    
+    if (!serviceNode) {
+      // Return error scene if service not found
+      return this.createErrorScene(`Service "${serviceId}" not found`);
+    }
+
+    const variables = new SceneVariableSet({
+      variables: [
+        new ConstantVariable({
+          name: 'service_id',
+          value: serviceId
+        }),
+        new ConstantVariable({
+          name: 'service_name', 
+          value: serviceNode.label
+        })
+      ]
+    });
+
+    // Service overview panel
+    const overviewPanel = PanelBuilders.stat()
+      .setTitle(`${serviceNode.label} Overview`)
+      .setUnit('none')
+      .setOption('reduceOptions', {
+        values: false,
+        calcs: ['lastNotNull'],
+        fields: ''
+      })
+      .setCustomFieldConfig('displayMode', 'list')
+      .setCustomFieldConfig('orientation', 'horizontal')
+      .build();
+
+    // CPU Usage Panel
+    const cpuPanel = PanelBuilders.timeseries()
+      .setTitle('CPU Usage')
+      .setUnit('percent')
+      .setCustomFieldConfig('fillOpacity', 10)
+      .setCustomFieldConfig('showPoints', 'never')
+      .setOption('legend', { displayMode: 'table', placement: 'bottom' })
+      .build();
+
+    cpuPanel.setState({
+      ...cpuPanel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: `rate(cpu_usage_seconds_total{service="${serviceId}"}[5m]) * 100`,
+            legendFormat: 'CPU Usage %',
+            interval: '30s'
+          }
+        ]
+      })
+    });
+
+    // Memory Usage Panel
+    const memoryPanel = PanelBuilders.timeseries()
+      .setTitle('Memory Usage')
+      .setUnit('bytes')
+      .setCustomFieldConfig('fillOpacity', 10)
+      .setOption('legend', { displayMode: 'table', placement: 'bottom' })
+      .build();
+
+    memoryPanel.setState({
+      ...memoryPanel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: `memory_usage_bytes{service="${serviceId}"}`,
+            legendFormat: 'Used',
+            interval: '30s'
+          },
+          {
+            refId: 'B',
+            expr: `memory_limit_bytes{service="${serviceId}"}`,
+            legendFormat: 'Limit',
+            interval: '30s'
+          }
+        ]
+      })
+    });
+
+    // Request Rate Panel
+    const requestPanel = PanelBuilders.timeseries()
+      .setTitle('Request Rate')
+      .setUnit('reqps')
+      .setCustomFieldConfig('fillOpacity', 20)
+      .build();
+
+    requestPanel.setState({
+      ...requestPanel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: `sum(rate(http_requests_total{service="${serviceId}"}[5m]))`,
+            legendFormat: 'Requests/sec',
+            interval: '30s'
+          }
+        ]
+      })
+    });
+
+    // Error Rate Panel
+    const errorPanel = PanelBuilders.timeseries()
+      .setTitle('Error Rate')
+      .setUnit('percent')
+      .setCustomFieldConfig('fillOpacity', 10)
+      .setThresholds({
+        steps: [
+          { color: 'green', value: 0 },
+          { color: 'yellow', value: 1 },
+          { color: 'red', value: 5 }
+        ]
+      })
+      .build();
+
+    errorPanel.setState({
+      ...errorPanel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: `sum(rate(http_requests_total{service="${serviceId}",status=~"5.."}[5m])) / sum(rate(http_requests_total{service="${serviceId}"}[5m])) * 100`,
+            legendFormat: 'Error Rate %',
+            interval: '30s'
+          }
+        ]
+      })
+    });
+
+    // Response Time Distribution Panel
+    const responseTimePanel = PanelBuilders.heatmap()
+      .setTitle('Response Time Distribution')
+      .setUnit('ms')
+      .build();
+
+    responseTimePanel.setState({
+      ...responseTimePanel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: `increase(http_request_duration_seconds_bucket{service="${serviceId}"}[5m])`,
+            legendFormat: '{{le}}',
+            interval: '30s',
+            format: 'heatmap'
+          }
+        ]
+      })
+    });
+
+    // Logs Panel (if available)
+    const logsPanel = PanelBuilders.logs()
+      .setTitle('Recent Logs')
+      .setOption('showTime', true)
+      .setOption('showLabels', false)
+      .setOption('wrapLogMessage', true)
+      .build();
+
+    // Service Dependencies Panel
+    const dependenciesListPanel = PanelBuilders.table()
+      .setTitle('Service Dependencies')
+      .setCustomFieldConfig('width', 150)
+      .build();
+
+    const layout = new SceneFlexLayout({
+      direction: 'column',
+      children: [
+        // Service overview row
+        new SceneFlexItem({
+          height: 100,
+          body: overviewPanel
+        }),
+        
+        // Main metrics row
+        new SceneFlexItem({
+          height: 300,
+          body: new SceneFlexLayout({
+            direction: 'row',
+            children: [
+              new SceneFlexItem({ width: '50%', body: cpuPanel }),
+              new SceneFlexItem({ width: '50%', body: memoryPanel })
+            ]
+          })
+        }),
+
+        // Request metrics row
+        new SceneFlexItem({
+          height: 300,
+          body: new SceneFlexLayout({
+            direction: 'row',
+            children: [
+              new SceneFlexItem({ width: '50%', body: requestPanel }),
+              new SceneFlexItem({ width: '50%', body: errorPanel })
+            ]
+          })
+        }),
+
+        // Advanced metrics row
+        new SceneFlexItem({
+          height: 250,
+          body: responseTimePanel
+        }),
+
+        // Dependencies and logs row
+        new SceneFlexItem({
+          height: 300,
+          body: new SceneFlexLayout({
+            direction: 'row',
+            children: [
+              new SceneFlexItem({ width: '40%', body: dependenciesListPanel }),
+              new SceneFlexItem({ width: '60%', body: logsPanel })
+            ]
+          })
+        })
+      ]
+    });
+
+    return new EmbeddedScene({
+      $variables: variables,
+      body: layout,
+      controls: [
+        new SceneTimePicker({}),
+        new SceneRefreshPicker({
+          intervals: ['5s', '10s', '30s', '1m', '5m'],
+          value: '30s'
+        })
+      ]
+    });
+  }
+
+  /**
+   * Create health overview panel
+   */
+  private static createHealthOverviewPanel(): VizPanel {
+    const panel = PanelBuilders.piechart()
+      .setTitle('Service Health Overview')
+      .setOption('reduceOptions', {
+        values: false,
+        calcs: ['lastNotNull'],
+        fields: ''
+      })
+      .setOption('pieType', 'pie')
+      .setOption('displayLabels', ['name', 'value'])
+      .build();
+
+    panel.setState({
+      ...panel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: 'count by (status) (service_health_status{environment=~"${environment}"})',
+            legendFormat: '{{status}}',
+            interval: '1m'
+          }
+        ]
+      })
+    });
+
+    return panel;
+  }
+
+  /**
+   * Create response time panel
+   */
+  private static createResponseTimePanel(): VizPanel {
+    const panel = PanelBuilders.timeseries()
+      .setTitle('Average Response Times')
+      .setUnit('ms')
+      .setCustomFieldConfig('fillOpacity', 10)
+      .setCustomFieldConfig('lineInterpolation', 'smooth')
+      .setOption('legend', { displayMode: 'table', placement: 'bottom' })
+      .build();
+
+    panel.setState({
+      ...panel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: 'avg by (service) (http_request_duration_seconds{quantile="0.95",environment=~"${environment}"}) * 1000',
+            legendFormat: '{{service}}',
+            interval: '30s'
+          }
+        ]
+      })
+    });
+
+    return panel;
+  }
+
+  /**
+   * Create throughput panel
+   */
+  private static createThroughputPanel(): VizPanel {
+    const panel = PanelBuilders.timeseries()
+      .setTitle('Request Throughput')
+      .setUnit('reqps')
+      .setCustomFieldConfig('fillOpacity', 20)
+      .setCustomFieldConfig('lineInterpolation', 'smooth')
+      .build();
+
+    panel.setState({
+      ...panel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: 'sum by (service) (rate(http_requests_total{environment=~"${environment}"}[5m]))',
+            legendFormat: '{{service}}',
+            interval: '30s'
+          }
+        ]
+      })
+    });
+
+    return panel;
+  }
+
+  /**
+   * Create error rate panel
+   */
+  private static createErrorRatePanel(): VizPanel {
+    const panel = PanelBuilders.stat()
+      .setTitle('Error Rates')
+      .setUnit('percent')
+      .setThresholds({
+        steps: [
+          { color: 'green', value: 0 },
+          { color: 'yellow', value: 1 },
+          { color: 'red', value: 5 }
+        ]
+      })
+      .setOption('reduceOptions', {
+        values: false,
+        calcs: ['lastNotNull'],
+        fields: ''
+      })
+      .setCustomFieldConfig('displayMode', 'gradient')
+      .build();
+
+    panel.setState({
+      ...panel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: 'sum by (service) (rate(http_requests_total{status=~"5..",environment=~"${environment}"}[5m])) / sum by (service) (rate(http_requests_total{environment=~"${environment}"}[5m])) * 100',
+            legendFormat: '{{service}}',
+            interval: '1m'
+          }
+        ]
+      })
+    });
+
+    return panel;
+  }
+
+  /**
+   * Create dependencies panel
+   */
+  private static createDependenciesPanel(): VizPanel {
+    const panel = PanelBuilders.table()
+      .setTitle('Service Dependencies')
+      .setOption('showHeader', true)
+      .build();
+
+    panel.setState({
+      ...panel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: 'service_dependency_info{environment=~"${environment}"}',
+            legendFormat: '{{source}} -> {{target}}',
+            interval: '5m',
+            format: 'table'
+          }
+        ]
+      })
+    });
+
+    return panel;
+  }
+
+  /**
+   * Create SLA panel
+   */
+  private static createSLAPanel(): VizPanel {
+    const panel = PanelBuilders.stat()
+      .setTitle('SLA Compliance')
+      .setUnit('percent')
+      .setThresholds({
+        steps: [
+          { color: 'red', value: 0 },
+          { color: 'yellow', value: 95 },
+          { color: 'green', value: 99 }
+        ]
+      })
+      .setOption('reduceOptions', {
+        values: false,
+        calcs: ['lastNotNull'],
+        fields: ''
+      })
+      .build();
+
+    panel.setState({
+      ...panel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: 'avg by (service) (sla_compliance_percentage{environment=~"${environment}"})',
+            legendFormat: '{{service}}',
+            interval: '5m'
+          }
+        ]
+      })
+    });
+
+    return panel;
+  }
+
+  /**
+   * Create alerts panel
+   */
+  private static createAlertsPanel(): VizPanel {
+    const panel = PanelBuilders.table()
+      .setTitle('Active Alerts')
+      .setOption('showHeader', true)
+      .build();
+
+    panel.setState({
+      ...panel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: 'ALERTS{environment=~"${environment}",alertstate="firing"}',
+            legendFormat: '{{alertname}}',
+            interval: '30s',
+            format: 'table'
+          }
+        ]
+      })
+    });
+
+    return panel;
+  }
+
+  /**
+   * Create top services panel
+   */
+  private static createTopServicesPanel(): VizPanel {
+    const panel = PanelBuilders.bargauge()
+      .setTitle('Top Services by Resource Usage')
+      .setUnit('percent')
+      .setOption('orientation', 'horizontal')
+      .setOption('displayMode', 'gradient')
+      .build();
+
+    panel.setState({
+      ...panel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: 'topk(10, avg by (service) (rate(cpu_usage_seconds_total{environment=~"${environment}"}[5m]) * 100))',
+            legendFormat: '{{service}} CPU',
+            interval: '1m'
+          },
+          {
+            refId: 'B',
+            expr: 'topk(10, avg by (service) (memory_usage_bytes{environment=~"${environment}"} / memory_limit_bytes{environment=~"${environment}"} * 100))',
+            legendFormat: '{{service}} Memory',
+            interval: '1m'
+          }
+        ]
+      })
+    });
+
+    return panel;
+  }
+
+  /**
+   * Create error scene for missing services
+   */
+  private static createErrorScene(message: string): EmbeddedScene {
+    const errorComponent = new SceneReactObject({
+      reactNode: () => React.createElement('div', {
+        className: 'error-state',
+        style: {
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '400px',
+          textAlign: 'center'
+        }
+      }, [
+        React.createElement('div', { key: 'icon', className: 'error-icon', style: { fontSize: '4rem', marginBottom: '1rem' } }, '⚠️'),
+        React.createElement('h2', { key: 'title', style: { marginBottom: '0.5rem' } }, 'Service Not Found'),
+        React.createElement('p', { key: 'message', style: { color: '#666' } }, message),
+        React.createElement('button', {
+          key: 'back',
+          onClick: () => window.history.back(),
+          style: {
+            marginTop: '1rem',
+            padding: '0.5rem 1rem',
+            backgroundColor: '#007bff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }
+        }, 'Go Back')
+      ])
+    });
+
+    return new EmbeddedScene({
+      body: errorComponent,
+      controls: []
+    });
+  }
+
+  /**
+   * Utility method to create service-specific metrics query runner
+   */
+  static createServiceMetricsQuery(serviceId: string, metric: string): SceneQueryRunner {
+    const queries: Record<string, string> = {
+      cpu: `rate(cpu_usage_seconds_total{service="${serviceId}"}[5m]) * 100`,
+      memory: `memory_usage_bytes{service="${serviceId}"} / memory_limit_bytes{service="${serviceId}"} * 100`,
+      requests: `sum(rate(http_requests_total{service="${serviceId}"}[5m]))`,
+      errors: `sum(rate(http_requests_total{service="${serviceId}",status=~"5.."}[5m])) / sum(rate(http_requests_total{service="${serviceId}"}[5m])) * 100`,
+      latency: `histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{service="${serviceId}"}[5m])) * 1000`
+    };
+
+    return new SceneQueryRunner({
+      queries: [
+        {
+          refId: 'A',
+          expr: queries[metric] || queries.cpu,
+          legendFormat: `{{service}} ${metric}`,
+          interval: '30s'
+        }
+      ]
+    });
+  }
+
+  /**
+   * Create a comparison scene for multiple services
+   */
+  static createComparisonScene(serviceIds: string[]): EmbeddedScene {
+    const variables = new SceneVariableSet({
+      variables: [
+        new CustomVariable({
+          name: 'services',
+          label: 'Services',
+          value: serviceIds,
+          options: serviceIds.map(id => ({ label: id, value: id })),
+          multi: true
+        })
+      ]
+    });
+
+    const comparisonPanels = [
+      this.createComparisonPanel('CPU Usage', 'percent', 'cpu'),
+      this.createComparisonPanel('Memory Usage', 'percent', 'memory'),  
+      this.createComparisonPanel('Request Rate', 'reqps', 'requests'),
+      this.createComparisonPanel('Error Rate', 'percent', 'errors'),
+      this.createComparisonPanel('Response Time', 'ms', 'latency')
+    ];
+
+    const layout = new SceneFlexLayout({
+      direction: 'column',
+      children: comparisonPanels.map((panel, index) => 
+        new SceneFlexItem({
+          height: index === 0 ? 250 : 200,
+          body: panel
+        })
+      )
+    });
+
+    return new EmbeddedScene({
+      $variables: variables,
+      body: layout,
+      controls: [
+        new SceneTimePicker({}),
+        new SceneRefreshPicker({})
+      ]
+    });
+  }
+
+  /**
+   * Create comparison panel for multiple services
+   */
+  private static createComparisonPanel(title: string, unit: string, metric: string): VizPanel {
+    const panel = PanelBuilders.timeseries()
+      .setTitle(title)
+      .setUnit(unit)
+      .setCustomFieldConfig('fillOpacity', 10)
+      .setOption('legend', { displayMode: 'table', placement: 'bottom' })
+      .build();
+
+    const queries: Record<string, string> = {
+      cpu: 'rate(cpu_usage_seconds_total{service=~"${services:regex}"}[5m]) * 100',
+      memory: 'memory_usage_bytes{service=~"${services:regex}"} / memory_limit_bytes{service=~"${services:regex}"} * 100',
+      requests: 'sum by (service) (rate(http_requests_total{service=~"${services:regex}"}[5m]))',
+      errors: 'sum by (service) (rate(http_requests_total{service=~"${services:regex}",status=~"5.."}[5m])) / sum by (service) (rate(http_requests_total{service=~"${services:regex}"}[5m])) * 100',
+      latency: 'histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{service=~"${services:regex}"}[5m])) * 1000'
+    };
+
+    panel.setState({
+      ...panel.state,
+      $data: new SceneQueryRunner({
+        queries: [
+          {
+            refId: 'A',
+            expr: queries[metric] || queries.cpu,
+            legendFormat: '{{service}}',
+            interval: '30s'
+          }
+        ]
+      })
+    });
+
+    return panel;
+  }
+}
