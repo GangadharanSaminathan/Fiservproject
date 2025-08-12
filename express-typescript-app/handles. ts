@@ -13,6 +13,7 @@ import {
 import { MongoRetryError } from './errors';
 import { CircuitBreaker } from './circuit-breaker';
 import { RetryUtils } from './utils';
+import { TypeSafeHelpers } from './type-safe-helpers';
 
 export class MongoRetryHandler {
   private readonly config: Required<Omit<RetryConfig, 'onRetry' | 'onFailure' | 'circuit'>> & {
@@ -24,6 +25,12 @@ export class MongoRetryHandler {
   private readonly circuitBreaker?: CircuitBreaker;
 
   constructor(options: RetryConfig = {}) {
+    // Validate configuration
+    const validation = TypeSafeHelpers.validateRetryConfig(options);
+    if (!validation.isValid) {
+      throw new Error(`Invalid retry configuration: ${validation.errors.join(', ')}`);
+    }
+
     this.config = {
       maxRetries: options.maxRetries ?? 5,
       baseDelay: options.baseDelay ?? 1000,
@@ -50,6 +57,14 @@ export class MongoRetryHandler {
     batch: T[],
     mongoOptions: BulkWriteOptions = {}
   ): Promise<InsertResult<T>> {
+    // Validate inputs
+    if (!collection) {
+      throw new Error('Collection is required');
+    }
+    if (!Array.isArray(batch) || batch.length === 0) {
+      throw new Error('Batch must be a non-empty array');
+    }
+
     // Check circuit breaker
     this.circuitBreaker?.shouldPreventExecution();
 
@@ -75,9 +90,14 @@ export class MongoRetryHandler {
         const result = await Promise.race([
           collection.insertMany(batch, options),
           RetryUtils.createTimeoutPromise<InsertManyResult<T>>(
-            options.writeConcern?.wtimeout ?? 30000
+            TypeSafeHelpers.safeGet(options, ['writeConcern', 'wtimeout'], 30000)
           )
         ]);
+
+        // Validate result
+        if (!result || typeof result.insertedCount !== 'number') {
+          throw new Error('Invalid result from insertMany operation');
+        }
 
         // Success - reset circuit breaker
         this.circuitBreaker?.recordSuccess();
@@ -86,8 +106,8 @@ export class MongoRetryHandler {
           totalAttempts: attempt + 1,
           totalTime: Date.now() - startTime,
           lastAttemptTime: Date.now() - attemptStart,
-          insertedCount: result.insertedCount,
-          attemptHistory: attemptResults
+          insertedCount: TypeSafeHelpers.getInsertedCount(result),
+          attemptHistory: [...attemptResults] // Create a copy
         };
 
         return { result, metrics };
@@ -97,18 +117,13 @@ export class MongoRetryHandler {
         lastError = mongoError;
         attempt++;
         
-        const previousAttempt = attemptResults[attempt - 2];
-        const previousAttemptTime = previousAttempt 
-          ? new Date(previousAttempt.timestamp).getTime() 
-          : startTime;
-
-        const attemptResult: AttemptResult = {
+        // Create attempt result safely
+        const attemptResult = TypeSafeHelpers.createAttemptResult(
           attempt,
-          error: mongoError.message,
-          errorCode: mongoError.code,
-          timestamp: new Date().toISOString(),
-          duration: Date.now() - previousAttemptTime
-        };
+          mongoError,
+          startTime,
+          attemptResults
+        );
         
         attemptResults.push(attemptResult);
 
@@ -116,21 +131,26 @@ export class MongoRetryHandler {
         if (!this.shouldRetry(mongoError, attempt)) {
           this.circuitBreaker?.recordFailure();
           
-          if (this.config.onFailure) {
-            await this.config.onFailure(mongoError, {
-              attempts: attempt,
-              totalTime: Date.now() - startTime,
-              batch,
-              attemptHistory: attemptResults
-            });
+          // Call failure callback safely
+          try {
+            if (this.config.onFailure) {
+              await this.config.onFailure(mongoError, {
+                attempts: attempt,
+                totalTime: Date.now() - startTime,
+                batch: [...batch], // Create a copy
+                attemptHistory: [...attemptResults] // Create a copy
+              });
+            }
+          } catch (callbackError) {
+            console.warn('Error in onFailure callback:', callbackError);
           }
           
           throw new MongoRetryError(
-            `MongoDB insertMany failed after ${attempt} attempts: ${mongoError.message}`,
+            `MongoDB insertMany failed after ${attempt} attempts: ${TypeSafeHelpers.getErrorMessage(mongoError)}`,
             mongoError,
             attempt,
             Date.now() - startTime,
-            attemptResults
+            [...attemptResults] // Create a copy
           );
         }
 
@@ -143,23 +163,29 @@ export class MongoRetryHandler {
           this.config.jitter
         );
         
-        if (this.config.onRetry) {
-          await this.config.onRetry(mongoError, {
-            attempt,
-            delay,
-            totalTime: Date.now() - startTime,
-            nextRetryAt: new Date(Date.now() + delay).toISOString()
-          });
+        // Call retry callback safely
+        try {
+          if (this.config.onRetry) {
+            await this.config.onRetry(mongoError, {
+              attempt,
+              delay,
+              totalTime: Date.now() - startTime,
+              nextRetryAt: new Date(Date.now() + delay).toISOString()
+            });
+          }
+        } catch (callbackError) {
+          console.warn('Error in onRetry callback:', callbackError);
         }
 
-        console.warn(`MongoDB insertMany attempt ${attempt} failed: ${mongoError.message}`);
+        console.warn(`MongoDB insertMany attempt ${attempt} failed: ${TypeSafeHelpers.getErrorMessage(mongoError)}`);
         console.warn(`Retrying in ${delay}ms...`);
         
         await RetryUtils.delay(delay);
       }
     }
 
-    throw lastError!;
+    // This should not be reached, but TypeScript needs it
+    throw lastError ?? new Error('Unknown error occurred during retry attempts');
   }
 
   /**
@@ -170,12 +196,28 @@ export class MongoRetryHandler {
     documents: T[],
     options: BatchOptions = {}
   ): Promise<BatchResult> {
+    // Validate inputs
+    if (!collection) {
+      throw new Error('Collection is required');
+    }
+    if (!Array.isArray(documents) || documents.length === 0) {
+      throw new Error('Documents must be a non-empty array');
+    }
+
     const {
       batchSize = 1000,
       concurrency = 3,
       mongoOptions = {},
       progressCallback = null
     } = options;
+
+    // Validate options
+    if (typeof batchSize !== 'number' || batchSize <= 0) {
+      throw new Error('batchSize must be a positive number');
+    }
+    if (typeof concurrency !== 'number' || concurrency <= 0) {
+      throw new Error('concurrency must be a positive number');
+    }
 
     const chunks = RetryUtils.chunkArray(documents, batchSize);
     const results: PromiseSettledResult<InsertResult<T> | { error: Error; chunk: T[] }>[] = [];
@@ -190,19 +232,27 @@ export class MongoRetryHandler {
           const result = await this.insertManyWithRetry(collection, chunk, mongoOptions);
           processed += chunk.length;
           
-          if (progressCallback) {
-            await progressCallback({
-              processed,
-              total: documents.length,
-              percentage: Math.round((processed / documents.length) * 100),
-              currentBatch: i + index + 1,
-              totalBatches: chunks.length
-            });
+          // Call progress callback safely
+          try {
+            if (progressCallback) {
+              await progressCallback({
+                processed,
+                total: documents.length,
+                percentage: Math.round((processed / documents.length) * 100),
+                currentBatch: i + index + 1,
+                totalBatches: chunks.length
+              });
+            }
+          } catch (callbackError) {
+            console.warn('Error in progress callback:', callbackError);
           }
           
           return result;
         } catch (error) {
-          return { error: error as Error, chunk };
+          return { 
+            error: error instanceof Error ? error : new Error(String(error)), 
+            chunk: [...chunk] // Create a copy
+          };
         }
       });
 
@@ -249,9 +299,25 @@ export class MongoRetryHandler {
   private aggregateBatchResults(
     results: PromiseSettledResult<InsertResult<any> | { error: Error; chunk: any[] }>[]
   ): BatchResult {
-    const aggregated = RetryUtils.aggregateBatchResults(results);
+    const filtered = TypeSafeHelpers.filterBatchResults(results);
+    
+    const totalInserted = filtered.successful.reduce(
+      (sum, result) => sum + TypeSafeHelpers.getInsertedCount(result.result), 
+      0
+    );
     
     return {
+      totalInserted,
+      successfulBatches: filtered.successful.length,
+      failedBatches: filtered.failed.length,
+      totalBatches: results.length,
+      details: {
+        successful: filtered.successful,
+        failed: filtered.failed
+      }
+    };
+  }
+} {
       totalInserted: aggregated.totalInserted,
       successfulBatches: aggregated.successful.length,
       failedBatches: aggregated.failed.length,
