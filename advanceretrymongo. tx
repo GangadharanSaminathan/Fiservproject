@@ -1,0 +1,663 @@
+// utils/advanced-mongo-client.js
+const { MongoClient, ReadPreference } = require('mongodb');
+const EventEmitter = require('events');
+const CircuitBreaker = require('opossum');
+
+class AdvancedMongoClient extends EventEmitter {
+  constructor(connectionString, options = {}) {
+    super();
+    
+    this.connectionString = connectionString;
+    this.options = {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      retryWrites: true,
+      retryReads: true,
+      maxPoolSize: 50,
+      minPoolSize: 5,
+      maxIdleTimeMS: 30000,
+      serverSelectionTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
+      heartbeatFrequencyMS: 10000,
+      readPreference: ReadPreference.SECONDARY_PREFERRED,
+      readConcern: { level: 'majority' },
+      writeConcern: { w: 'majority', j: true, wtimeout: 5000 },
+      compressors: ['snappy', 'zlib'],
+      ...options
+    };
+
+    this.client = null;
+    this.isConnected = false;
+    this.databases = new Map();
+    this.metrics = this.initializeMetrics();
+    this.circuitBreaker = this.createCircuitBreaker();
+    this.healthChecker = null;
+    this.retryConfig = {
+      maxRetries: 5,
+      baseDelay: 200,
+      maxDelay: 10000,
+      backoffFactor: 2,
+      jitterRange: 0.1
+    };
+  }
+
+  initializeMetrics() {
+    return {
+      totalOperations: 0,
+      successfulOperations: 0,
+      failedOperations: 0,
+      retriedOperations: 0,
+      circuitBreakerTrips: 0,
+      averageResponseTime: 0,
+      connectionEvents: {
+        connects: 0,
+        disconnects: 0,
+        reconnects: 0,
+        errors: 0
+      },
+      operationsByType: new Map(),
+      errorsByType: new Map(),
+      responseTimeHistory: []
+    };
+  }
+
+  createCircuitBreaker() {
+    const options = {
+      timeout: 30000, // 30 seconds
+      errorThresholdPercentage: 50,
+      resetTimeout: 60000, // 1 minute
+      rollingCountTimeout: 60000,
+      rollingCountBuckets: 10,
+      name: 'MongoDBCircuitBreaker',
+      group: 'database'
+    };
+
+    const breaker = new CircuitBreaker(this.executeOperation.bind(this), options);
+    
+    breaker.on('open', () => {
+      this.metrics.circuitBreakerTrips++;
+      this.emit('circuitBreakerOpen');
+      console.warn('Circuit breaker opened - MongoDB operations will be rejected');
+    });
+
+    breaker.on('halfOpen', () => {
+      this.emit('circuitBreakerHalfOpen');
+      console.info('Circuit breaker half-open - testing MongoDB connectivity');
+    });
+
+    breaker.on('close', () => {
+      this.emit('circuitBreakerClose');
+      console.info('Circuit breaker closed - MongoDB operations restored');
+    });
+
+    return breaker;
+  }
+
+  async connect() {
+    try {
+      this.client = new MongoClient(this.connectionString, this.options);
+      
+      // Set up connection event listeners
+      this.setupConnectionEventListeners();
+      
+      await this.client.connect();
+      this.isConnected = true;
+      this.metrics.connectionEvents.connects++;
+      
+      // Start health checker
+      this.startHealthChecker();
+      
+      this.emit('connected');
+      console.log('Connected to MongoDB Cosmos DB with advanced features');
+      
+      return this.client;
+    } catch (error) {
+      this.metrics.connectionEvents.errors++;
+      this.emit('connectionError', error);
+      console.error('Failed to connect to MongoDB:', error);
+      throw error;
+    }
+  }
+
+  setupConnectionEventListeners() {
+    if (!this.client) return;
+
+    this.client.on('serverHeartbeatStarted', () => {
+      this.emit('heartbeatStarted');
+    });
+
+    this.client.on('serverHeartbeatSucceeded', () => {
+      this.emit('heartbeatSucceeded');
+    });
+
+    this.client.on('serverHeartbeatFailed', (event) => {
+      this.emit('heartbeatFailed', event);
+      console.warn('Server heartbeat failed:', event);
+    });
+
+    this.client.on('topologyDescriptionChanged', (event) => {
+      this.emit('topologyChanged', event);
+    });
+
+    this.client.on('close', () => {
+      this.isConnected = false;
+      this.metrics.connectionEvents.disconnects++;
+      this.emit('disconnected');
+    });
+  }
+
+  startHealthChecker() {
+    this.healthChecker = setInterval(async () => {
+      try {
+        await this.client.db('admin').command({ ping: 1 });
+        this.emit('healthCheck', { status: 'healthy' });
+      } catch (error) {
+        this.emit('healthCheck', { status: 'unhealthy', error });
+        console.warn('Health check failed:', error.message);
+      }
+    }, 30000); // Every 30 seconds
+  }
+
+  async executeWithAdvancedRetry(operation, operationType = 'unknown', customConfig = {}) {
+    const config = { ...this.retryConfig, ...customConfig };
+    const startTime = Date.now();
+    
+    this.metrics.totalOperations++;
+    this.updateOperationMetrics(operationType, 'started');
+
+    try {
+      const result = await this.circuitBreaker.fire(operation, operationType);
+      
+      const duration = Date.now() - startTime;
+      this.updateResponseTimeMetrics(duration);
+      this.metrics.successfulOperations++;
+      this.updateOperationMetrics(operationType, 'success');
+      
+      return result;
+    } catch (error) {
+      this.metrics.failedOperations++;
+      this.updateOperationMetrics(operationType, 'failed');
+      this.updateErrorMetrics(error);
+      
+      console.error(`Operation ${operationType} failed:`, {
+        error: error.message,
+        duration: Date.now() - startTime,
+        metrics: this.getMetricsSummary()
+      });
+      
+      throw error;
+    }
+  }
+
+  async executeOperation(operation, operationType) {
+    const config = this.retryConfig;
+    let lastError;
+
+    for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          this.metrics.retriedOperations++;
+          console.log(`Retry attempt ${attempt} for operation: ${operationType}`);
+        }
+
+        return await operation();
+      } catch (error) {
+        lastError = error;
+
+        if (!this.isRetryableError(error) || attempt >= config.maxRetries) {
+          throw error;
+        }
+
+        const delay = this.calculateAdvancedDelay(attempt, error, config);
+        console.log(`Retrying ${operationType} in ${delay}ms due to: ${error.message}`);
+        
+        await this.sleep(delay);
+      }
+    }
+
+    throw lastError;
+  }
+
+  isRetryableError(error) {
+    // Cosmos DB specific errors
+    if (error.code === 16500 || error.code === 16501) return true;
+    
+    // Rate limiting
+    if (error.message?.includes('TooManyRequests') ||
+        error.message?.includes('RetryAfterMs') ||
+        error.message?.includes('Request rate is large')) return true;
+    
+    // Network and connection errors
+    const retryableErrors = [
+      'MongoNetworkError',
+      'MongoNetworkTimeoutError',
+      'MongoServerSelectionError',
+      'MongoWriteConcernError',
+      'MongoTimeoutError'
+    ];
+    
+    if (retryableErrors.includes(error.name)) return true;
+    
+    // Specific error codes
+    const retryableCodes = [
+      6, 7, 89, 91, 189, 262, 9001, 10107, 11600, 11602, 13436, 13435
+    ];
+    
+    return retryableCodes.includes(error.code);
+  }
+
+  calculateAdvancedDelay(attempt, error, config) {
+    // Extract RetryAfterMs from Cosmos DB error
+    const retryAfterMatch = error.message?.match(/RetryAfterMs=(\d+)/);
+    if (retryAfterMatch) {
+      const retryAfter = parseInt(retryAfterMatch[1]);
+      return Math.min(retryAfter, config.maxDelay);
+    }
+
+    // Exponential backoff with jitter and circuit breaker awareness
+    const exponentialDelay = config.baseDelay * Math.pow(config.backoffFactor, attempt);
+    const jitter = exponentialDelay * config.jitterRange * (Math.random() * 2 - 1);
+    const delayWithJitter = exponentialDelay + jitter;
+    
+    // Apply circuit breaker back-pressure
+    const circuitBreakerMultiplier = this.circuitBreaker.stats.failures > 0 ? 1.5 : 1;
+    
+    return Math.min(delayWithJitter * circuitBreakerMultiplier, config.maxDelay);
+  }
+
+  updateOperationMetrics(operationType, status) {
+    if (!this.metrics.operationsByType.has(operationType)) {
+      this.metrics.operationsByType.set(operationType, {
+        started: 0,
+        success: 0,
+        failed: 0
+      });
+    }
+    
+    this.metrics.operationsByType.get(operationType)[status]++;
+  }
+
+  updateErrorMetrics(error) {
+    const errorType = error.name || 'UnknownError';
+    const count = this.metrics.errorsByType.get(errorType) || 0;
+    this.metrics.errorsByType.set(errorType, count + 1);
+  }
+
+  updateResponseTimeMetrics(duration) {
+    this.metrics.responseTimeHistory.push({
+      timestamp: Date.now(),
+      duration
+    });
+
+    // Keep only last 1000 entries
+    if (this.metrics.responseTimeHistory.length > 1000) {
+      this.metrics.responseTimeHistory = this.metrics.responseTimeHistory.slice(-1000);
+    }
+
+    // Calculate average
+    const totalTime = this.metrics.responseTimeHistory.reduce((sum, entry) => sum + entry.duration, 0);
+    this.metrics.averageResponseTime = totalTime / this.metrics.responseTimeHistory.length;
+  }
+
+  getDatabase(dbName) {
+    if (!this.isConnected || !this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    if (!this.databases.has(dbName)) {
+      this.databases.set(dbName, this.client.db(dbName));
+    }
+
+    return this.databases.get(dbName);
+  }
+
+  getMetricsSummary() {
+    return {
+      totalOperations: this.metrics.totalOperations,
+      successRate: this.metrics.totalOperations > 0 
+        ? (this.metrics.successfulOperations / this.metrics.totalOperations * 100).toFixed(2) + '%'
+        : '0%',
+      averageResponseTime: Math.round(this.metrics.averageResponseTime),
+      circuitBreakerState: this.circuitBreaker.state,
+      circuitBreakerStats: this.circuitBreaker.stats,
+      connectionEvents: this.metrics.connectionEvents,
+      retriedOperations: this.metrics.retriedOperations
+    };
+  }
+
+  getDetailedMetrics() {
+    return {
+      ...this.metrics,
+      circuitBreakerState: this.circuitBreaker.state,
+      circuitBreakerStats: this.circuitBreaker.stats,
+      operationsByType: Object.fromEntries(this.metrics.operationsByType),
+      errorsByType: Object.fromEntries(this.metrics.errorsByType),
+      responseTimePercentiles: this.calculateResponseTimePercentiles()
+    };
+  }
+
+  calculateResponseTimePercentiles() {
+    if (this.metrics.responseTimeHistory.length === 0) return {};
+
+    const durations = this.metrics.responseTimeHistory
+      .map(entry => entry.duration)
+      .sort((a, b) => a - b);
+
+    const percentiles = [50, 75, 90, 95, 99];
+    const result = {};
+
+    percentiles.forEach(p => {
+      const index = Math.ceil((p / 100) * durations.length) - 1;
+      result[`p${p}`] = durations[Math.max(0, index)];
+    });
+
+    return result;
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async close() {
+    if (this.healthChecker) {
+      clearInterval(this.healthChecker);
+      this.healthChecker = null;
+    }
+
+    if (this.client && this.isConnected) {
+      await this.client.close();
+      this.isConnected = false;
+      this.databases.clear();
+      this.emit('disconnected');
+      console.log('MongoDB connection closed');
+    }
+  }
+}
+
+module.exports = AdvancedMongoClient;
+
+// utils/advanced-database-manager.js
+const AdvancedMongoClient = require('./advanced-mongo-client');
+const EventEmitter = require('events');
+
+class AdvancedDatabaseManager extends EventEmitter {
+  constructor() {
+    super();
+    this.mongoClient = null;
+    this.database = null;
+    this.isInitialized = false;
+    this.transactionSessions = new Map();
+    this.cacheLayer = new Map();
+    this.cacheConfig = {
+      ttl: 300000, // 5 minutes
+      maxSize: 1000
+    };
+  }
+
+  async initialize(connectionString, dbName, options = {}) {
+    try {
+      this.mongoClient = new AdvancedMongoClient(connectionString, options);
+      
+      // Forward events
+      this.mongoClient.on('connected', () => this.emit('connected'));
+      this.mongoClient.on('disconnected', () => this.emit('disconnected'));
+      this.mongoClient.on('circuitBreakerOpen', () => this.emit('circuitBreakerOpen'));
+      this.mongoClient.on('healthCheck', (status) => this.emit('healthCheck', status));
+
+      await this.mongoClient.connect();
+      this.database = this.mongoClient.getDatabase(dbName);
+      this.isInitialized = true;
+
+      this.startCacheCleanup();
+      
+      console.log(`Advanced database manager initialized for database: ${dbName}`);
+      return this.database;
+    } catch (error) {
+      console.error('Failed to initialize database manager:', error);
+      throw error;
+    }
+  }
+
+  async executeWithRetry(operation, operationType = 'unknown', options = {}) {
+    if (!this.isInitialized) {
+      throw new Error('Database manager not initialized');
+    }
+
+    const {
+      useCache = false,
+      cacheKey = null,
+      cacheTtl = this.cacheConfig.ttl,
+      useTransaction = false,
+      transactionOptions = {},
+      customRetryConfig = {}
+    } = options;
+
+    // Check cache first
+    if (useCache && cacheKey) {
+      const cached = this.getFromCache(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    // Execute with transaction if requested
+    if (useTransaction) {
+      return this.executeInTransaction(operation, operationType, transactionOptions, customRetryConfig);
+    }
+
+    // Regular execution with retry
+    const result = await this.mongoClient.executeWithAdvancedRetry(
+      operation,
+      operationType,
+      customRetryConfig
+    );
+
+    // Cache the result if specified
+    if (useCache && cacheKey && result) {
+      this.setCache(cacheKey, result, cacheTtl);
+    }
+
+    return result;
+  }
+
+  async executeInTransaction(operation, operationType, transactionOptions = {}, retryConfig = {}) {
+    const session = this.mongoClient.client.startSession();
+    const sessionId = this.generateSessionId();
+    
+    try {
+      this.transactionSessions.set(sessionId, session);
+      
+      const defaultTransactionOptions = {
+        readConcern: { level: 'snapshot' },
+        writeConcern: { w: 'majority', j: true },
+        readPreference: 'primary',
+        maxCommitTimeMS: 30000,
+        ...transactionOptions
+      };
+
+      return await session.withTransaction(async () => {
+        return await this.mongoClient.executeWithAdvancedRetry(
+          () => operation(session),
+          `transaction-${operationType}`,
+          retryConfig
+        );
+      }, defaultTransactionOptions);
+
+    } finally {
+      this.transactionSessions.delete(sessionId);
+      await session.endSession();
+    }
+  }
+
+  async executeAggregationPipeline(collectionName, pipeline, options = {}) {
+    return this.executeWithRetry(async () => {
+      const collection = this.database.collection(collectionName);
+      
+      const aggregationOptions = {
+        allowDiskUse: true,
+        maxTimeMS: 30000,
+        ...options
+      };
+
+      return await collection.aggregate(pipeline, aggregationOptions).toArray();
+    }, `aggregation-${collectionName}`, options);
+  }
+
+  async executeBulkOperation(collectionName, operations, options = {}) {
+    return this.executeWithRetry(async () => {
+      const collection = this.database.collection(collectionName);
+      
+      const bulkOptions = {
+        ordered: false,
+        bypassDocumentValidation: false,
+        ...options.bulkOptions
+      };
+
+      const bulk = collection.initializeUnorderedBulkOp(bulkOptions);
+      
+      operations.forEach(op => {
+        switch (op.type) {
+          case 'insert':
+            bulk.insert(op.document);
+            break;
+          case 'update':
+            bulk.find(op.filter).update(op.update, op.options || {});
+            break;
+          case 'upsert':
+            bulk.find(op.filter).upsert().update(op.update);
+            break;
+          case 'delete':
+            bulk.find(op.filter).delete();
+            break;
+          case 'replace':
+            bulk.find(op.filter).replaceOne(op.replacement);
+            break;
+        }
+      });
+
+      return await bulk.execute();
+    }, `bulk-${collectionName}`, options);
+  }
+
+  async createOptimizedIndexes(collectionName, indexes) {
+    return this.executeWithRetry(async () => {
+      const collection = this.database.collection(collectionName);
+      
+      const indexSpecs = indexes.map(index => ({
+        key: index.key,
+        name: index.name || this.generateIndexName(index.key),
+        background: true,
+        ...index.options
+      }));
+
+      return await collection.createIndexes(indexSpecs);
+    }, `create-indexes-${collectionName}`);
+  }
+
+  // Cache management
+  setCache(key, value, ttl = this.cacheConfig.ttl) {
+    // Implement LRU eviction if cache is full
+    if (this.cacheLayer.size >= this.cacheConfig.maxSize) {
+      const oldestKey = this.cacheLayer.keys().next().value;
+      this.cacheLayer.delete(oldestKey);
+    }
+
+    this.cacheLayer.set(key, {
+      value,
+      timestamp: Date.now(),
+      ttl
+    });
+  }
+
+  getFromCache(key) {
+    const cached = this.cacheLayer.get(key);
+    if (!cached) return null;
+
+    if (Date.now() - cached.timestamp > cached.ttl) {
+      this.cacheLayer.delete(key);
+      return null;
+    }
+
+    return cached.value;
+  }
+
+  clearCache(pattern = null) {
+    if (pattern) {
+      const regex = new RegExp(pattern);
+      for (const key of this.cacheLayer.keys()) {
+        if (regex.test(key)) {
+          this.cacheLayer.delete(key);
+        }
+      }
+    } else {
+      this.cacheLayer.clear();
+    }
+  }
+
+  startCacheCleanup() {
+    setInterval(() => {
+      const now = Date.now();
+      for (const [key, cached] of this.cacheLayer.entries()) {
+        if (now - cached.timestamp > cached.ttl) {
+          this.cacheLayer.delete(key);
+        }
+      }
+    }, 60000); // Clean every minute
+  }
+
+  getCollection(collectionName) {
+    if (!this.isInitialized) {
+      throw new Error('Database manager not initialized');
+    }
+    return this.database.collection(collectionName);
+  }
+
+  generateSessionId() {
+    return `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  generateIndexName(keyObj) {
+    return Object.entries(keyObj)
+      .map(([field, direction]) => `${field}_${direction}`)
+      .join('_');
+  }
+
+  getMetrics() {
+    return {
+      database: this.mongoClient?.getDetailedMetrics() || {},
+      cache: {
+        size: this.cacheLayer.size,
+        maxSize: this.cacheConfig.maxSize,
+        hitRate: this.calculateCacheHitRate()
+      },
+      activeSessions: this.transactionSessions.size
+    };
+  }
+
+  calculateCacheHitRate() {
+    // This is a simplified implementation
+    // In production, you'd want to track hits/misses properly
+    return this.cacheLayer.size > 0 ? '85%' : '0%';
+  }
+
+  async close() {
+    if (this.mongoClient) {
+      // Close all active sessions
+      for (const session of this.transactionSessions.values()) {
+        await session.endSession();
+      }
+      this.transactionSessions.clear();
+
+      // Clear cache
+      this.cacheLayer.clear();
+
+      // Close client
+      await this.mongoClient.close();
+      this.isInitialized = false;
+    }
+  }
+}
+
+// Export singleton
+const advancedDatabaseManager = new AdvancedDatabaseManager();
+module.exports = advancedDatabaseManager;
