@@ -1,0 +1,120 @@
+// circuit-breaker.ts
+import { CircuitBreakerConfig, CircuitBreakerState } from './types';
+import { CircuitBreakerError } from './errors';
+
+export class CircuitBreaker {
+  private state: CircuitBreakerState;
+  private readonly config: CircuitBreakerConfig;
+
+  constructor(config: CircuitBreakerConfig) {
+    this.config = config;
+    this.state = {
+      failures: 0,
+      lastFailureTime: 0,
+      state: 'CLOSED'
+    };
+  }
+
+  /**
+   * Check if the circuit breaker is open
+   */
+  isOpen(): boolean {
+    const { failures, lastFailureTime, state } = this.state;
+    const { threshold, timeout } = this.config;
+    
+    if (state === 'OPEN') {
+      if (Date.now() - lastFailureTime > timeout) {
+        this.state.state = 'HALF_OPEN';
+        return false;
+      }
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Check if circuit breaker should prevent execution
+   */
+  shouldPreventExecution(): boolean {
+    if (this.isOpen()) {
+      throw new CircuitBreakerError(this.state.failures, this.state.lastFailureTime);
+    }
+    return false;
+  }
+
+  /**
+   * Record a successful operation
+   */
+  recordSuccess(): void {
+    this.reset();
+  }
+
+  /**
+   * Record a failed operation
+   */
+  recordFailure(): void {
+    this.state.failures++;
+    this.state.lastFailureTime = Date.now();
+    
+    if (this.state.failures >= this.config.threshold) {
+      this.state.state = 'OPEN';
+      console.warn(
+        `Circuit breaker opened due to ${this.state.failures} consecutive failures`
+      );
+    }
+  }
+
+  /**
+   * Reset the circuit breaker to closed state
+   */
+  reset(): void {
+    this.state = {
+      failures: 0,
+      lastFailureTime: 0,
+      state: 'CLOSED'
+    };
+  }
+
+  /**
+   * Get current circuit breaker state
+   */
+  getState(): Readonly<CircuitBreakerState> {
+    return { ...this.state };
+  }
+
+  /**
+   * Get circuit breaker configuration
+   */
+  getConfig(): Readonly<CircuitBreakerConfig> {
+    return { ...this.config };
+  }
+
+  /**
+   * Check if the circuit breaker is in half-open state
+   */
+  isHalfOpen(): boolean {
+    return this.state.state === 'HALF_OPEN';
+  }
+
+  /**
+   * Check if the circuit breaker is closed
+   */
+  isClosed(): boolean {
+    return this.state.state === 'CLOSED';
+  }
+
+  /**
+   * Get time until circuit breaker will attempt to close (if open)
+   */
+  getTimeUntilRetry(): number {
+    if (this.state.state !== 'OPEN') {
+      return 0;
+    }
+    
+    const timeSinceLastFailure = Date.now() - this.state.lastFailureTime;
+    const timeUntilRetry = this.config.timeout - timeSinceLastFailure;
+    
+    return Math.max(0, timeUntilRetry);
+  }
+}
