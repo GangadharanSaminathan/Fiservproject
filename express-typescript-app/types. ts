@@ -1,0 +1,96 @@
+// types.ts
+import { Collection, InsertManyResult, BulkWriteOptions } from 'mongodb';
+
+export interface RetryConfig {
+  maxRetries?: number;
+  baseDelay?: number;
+  maxDelay?: number;
+  backoffMultiplier?: number;
+  jitter?: boolean;
+  retryableErrors?: string[];
+  retryableCodes?: number[];
+  onRetry?: RetryCallback | null;
+  onFailure?: FailureCallback | null;
+  circuit?: CircuitBreakerConfig | null;
+}
+
+export interface CircuitBreakerConfig {
+  threshold: number;
+  timeout: number;
+}
+
+export interface CircuitBreakerState {
+  failures: number;
+  lastFailureTime: number;
+  state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+}
+
+export interface AttemptResult {
+  attempt: number;
+  error: string;
+  errorCode?: number;
+  timestamp: string;
+  duration: number;
+}
+
+export interface RetryMetrics {
+  totalAttempts: number;
+  totalTime: number;
+  lastAttemptTime: number;
+  insertedCount: number;
+  attemptHistory: AttemptResult[];
+}
+
+export interface RetryContext {
+  attempt: number;
+  delay: number;
+  totalTime: number;
+  nextRetryAt: string;
+}
+
+export interface FailureContext {
+  attempts: number;
+  totalTime: number;
+  batch: any[];
+  attemptHistory: AttemptResult[];
+}
+
+export interface InsertResult<T> {
+  result: InsertManyResult<T>;
+  metrics: RetryMetrics;
+}
+
+export interface BatchOptions {
+  batchSize?: number;
+  concurrency?: number;
+  mongoOptions?: BulkWriteOptions;
+  progressCallback?: ProgressCallback | null;
+}
+
+export interface ProgressInfo {
+  processed: number;
+  total: number;
+  percentage: number;
+  currentBatch: number;
+  totalBatches: number;
+}
+
+export interface BatchResult {
+  totalInserted: number;
+  successfulBatches: number;
+  failedBatches: number;
+  totalBatches: number;
+  details: {
+    successful: Array<InsertResult<any>>;
+    failed: Array<{ error: Error; chunk: any[] }>;
+  };
+}
+
+export type RetryCallback = (error: Error, context: RetryContext) => Promise<void> | void;
+export type FailureCallback = (error: Error, context: FailureContext) => Promise<void> | void;
+export type ProgressCallback = (progress: ProgressInfo) => Promise<void> | void;
+
+export type Document = Record<string, any>;
+
+// Re-export commonly used MongoDB types
+export type { Collection, InsertManyResult, BulkWriteOptions } from 'mongodb';
