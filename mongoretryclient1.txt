@@ -1,0 +1,509 @@
+// utils/mongoRetryClient.js
+const { MongoClient } = require('mongodb');
+
+class MongoRetryClient {
+  constructor(connectionString, options = {}) {
+    this.client = new MongoClient(connectionString, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      retryWrites: true,
+      retryReads: true,
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 30000,
+      socketTimeoutMS: 60000,
+      ...options
+    });
+    this.isConnected = false;
+  }
+
+  async connect() {
+    if (!this.isConnected) {
+      await this.executeWithRetry(async () => {
+        await this.client.connect();
+        this.isConnected = true;
+        console.log('Connected to MongoDB Cosmos DB');
+      });
+    }
+    return this.client;
+  }
+
+  async executeWithRetry(operation, maxRetries = 3) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (this.isRetryableError(error) && attempt < maxRetries) {
+          const delay = this.calculateDelay(attempt, error);
+          console.log(`Retry attempt ${attempt + 1} after ${delay}ms due to:`, error.message);
+          await this.sleep(delay);
+          continue;
+        }
+        
+        // Log final error
+        console.error(`Operation failed after ${attempt + 1} attempts:`, error.message);
+        throw error;
+      }
+    }
+  }
+
+  isRetryableError(error) {
+    // Check for Cosmos DB rate limiting (Error 16500)
+    if (error.code === 16500) return true;
+    
+    // Check for rate limiting messages
+    if (error.message && (
+      error.message.includes('TooManyRequests') ||
+      error.message.includes('RetryAfterMs') ||
+      error.message.includes('Request rate is large')
+    )) return true;
+    
+    // Check for network/connection errors
+    if (error.name === 'MongoNetworkError' || 
+        error.name === 'MongoServerSelectionError' ||
+        error.name === 'MongoTimeoutError') return true;
+    
+    return false;
+  }
+
+  calculateDelay(attempt, error) {
+    // Try to extract RetryAfterMs from Cosmos DB error message
+    const retryAfterMatch = error.message?.match(/RetryAfterMs=(\d+)/);
+    if (retryAfterMatch) {
+      return Math.max(parseInt(retryAfterMatch[1]), 100); // Minimum 100ms
+    }
+    
+    // Exponential backoff with jitter: base delay * 2^attempt + random jitter
+    const baseDelay = 500; // 500ms base delay
+    const exponentialDelay = baseDelay * Math.pow(2, attempt);
+    const jitter = Math.random() * 200; // 0-200ms random jitter
+    
+    return Math.min(exponentialDelay + jitter, 10000); // Max 10 seconds
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  getDatabase(dbName) {
+    if (!this.isConnected) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+    return this.client.db(dbName);
+  }
+
+  async close() {
+    if (this.isConnected) {
+      await this.client.close();
+      this.isConnected = false;
+      console.log('MongoDB connection closed');
+    }
+  }
+}
+
+module.exports = MongoRetryClient;
+
+// utils/database.js
+const MongoRetryClient = require('./mongoRetryClient');
+
+class DatabaseManager {
+  constructor() {
+    this.mongoClient = null;
+    this.database = null;
+  }
+
+  async initialize() {
+    const connectionString = process.env.COSMOS_DB_CONNECTION_STRING || 
+      'mongodb://localhost:27017/testdb';
+    
+    this.mongoClient = new MongoRetryClient(connectionString);
+    await this.mongoClient.connect();
+    this.database = this.mongoClient.getDatabase(process.env.DATABASE_NAME || 'testdb');
+    
+    return this.database;
+  }
+
+  async executeWithRetry(operation) {
+    if (!this.mongoClient) {
+      throw new Error('Database not initialized. Call initialize() first.');
+    }
+    return this.mongoClient.executeWithRetry(operation);
+  }
+
+  getCollection(collectionName) {
+    if (!this.database) {
+      throw new Error('Database not initialized. Call initialize() first.');
+    }
+    return this.database.collection(collectionName);
+  }
+
+  async close() {
+    if (this.mongoClient) {
+      await this.mongoClient.close();
+    }
+  }
+}
+
+// Export singleton instance
+const databaseManager = new DatabaseManager();
+module.exports = databaseManager;
+
+// services/userService.js
+const databaseManager = require('../utils/database');
+
+class UserService {
+  constructor() {
+    this.collectionName = 'users';
+  }
+
+  async createUser(userData) {
+    return databaseManager.executeWithRetry(async () => {
+      const collection = databaseManager.getCollection(this.collectionName);
+      const result = await collection.insertOne({
+        ...userData,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      
+      return {
+        id: result.insertedId,
+        ...userData,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+    });
+  }
+
+  async getUserById(userId) {
+    return databaseManager.executeWithRetry(async () => {
+      const collection = databaseManager.getCollection(this.collectionName);
+      const { ObjectId } = require('mongodb');
+      
+      return await collection.findOne({ 
+        _id: new ObjectId(userId) 
+      });
+    });
+  }
+
+  async getUsersByFilter(filter = {}, options = {}) {
+    return databaseManager.executeWithRetry(async () => {
+      const collection = databaseManager.getCollection(this.collectionName);
+      
+      const {
+        page = 1,
+        limit = 10,
+        sortBy = 'createdAt',
+        sortOrder = -1
+      } = options;
+      
+      const skip = (page - 1) * limit;
+      
+      const cursor = collection
+        .find(filter)
+        .sort({ [sortBy]: sortOrder })
+        .skip(skip)
+        .limit(limit);
+      
+      const users = await cursor.toArray();
+      const total = await collection.countDocuments(filter);
+      
+      return {
+        users,
+        pagination: {
+          page,
+          limit,
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      };
+    });
+  }
+
+  async updateUser(userId, updateData) {
+    return databaseManager.executeWithRetry(async () => {
+      const collection = databaseManager.getCollection(this.collectionName);
+      const { ObjectId } = require('mongodb');
+      
+      const result = await collection.findOneAndUpdate(
+        { _id: new ObjectId(userId) },
+        { 
+          $set: {
+            ...updateData,
+            updatedAt: new Date()
+          }
+        },
+        { returnDocument: 'after' }
+      );
+      
+      if (!result.value) {
+        throw new Error('User not found');
+      }
+      
+      return result.value;
+    });
+  }
+
+  async deleteUser(userId) {
+    return databaseManager.executeWithRetry(async () => {
+      const collection = databaseManager.getCollection(this.collectionName);
+      const { ObjectId } = require('mongodb');
+      
+      const result = await collection.deleteOne({ 
+        _id: new ObjectId(userId) 
+      });
+      
+      if (result.deletedCount === 0) {
+        throw new Error('User not found');
+      }
+      
+      return { deleted: true, id: userId };
+    });
+  }
+
+  async bulkCreateUsers(usersData) {
+    return databaseManager.executeWithRetry(async () => {
+      const collection = databaseManager.getCollection(this.collectionName);
+      
+      const usersWithTimestamps = usersData.map(user => ({
+        ...user,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      }));
+      
+      const result = await collection.insertMany(usersWithTimestamps);
+      
+      return {
+        insertedCount: result.insertedCount,
+        insertedIds: result.insertedIds
+      };
+    });
+  }
+}
+
+module.exports = UserService;
+
+// controllers/userController.js
+const UserService = require('../services/userService');
+
+class UserController {
+  constructor() {
+    this.userService = new UserService();
+  }
+
+  // Create a new user
+  async createUser(req, res) {
+    try {
+      const userData = req.body;
+      
+      // Basic validation
+      if (!userData.email || !userData.name) {
+        return res.status(400).json({
+          success: false,
+          error: 'Email and name are required'
+        });
+      }
+
+      const user = await this.userService.createUser(userData);
+      
+      res.status(201).json({
+        success: true,
+        data: user,
+        message: 'User created successfully'
+      });
+      
+    } catch (error) {
+      console.error('Create user error:', error);
+      
+      // Handle specific MongoDB errors
+      if (error.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          error: 'User with this email already exists'
+        });
+      }
+      
+      res.status(500).json({
+        success: false,
+        error: 'Failed to create user',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+
+  // Get user by ID
+  async getUserById(req, res) {
+    try {
+      const { id } = req.params;
+      const user = await this.userService.getUserById(id);
+      
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: 'User not found'
+        });
+      }
+      
+      res.json({
+        success: true,
+        data: user
+      });
+      
+    } catch (error) {
+      console.error('Get user error:', error);
+      
+      if (error.message.includes('ObjectId')) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid user ID format'
+        });
+      }
+      
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch user'
+      });
+    }
+  }
+
+  // Get users with filtering and pagination
+  async getUsers(req, res) {
+    try {
+      const {
+        page = 1,
+        limit = 10,
+        sortBy = 'createdAt',
+        sortOrder = 'desc',
+        ...filterParams
+      } = req.query;
+
+      // Build filter object
+      const filter = {};
+      if (filterParams.email) {
+        filter.email = { $regex: filterParams.email, $options: 'i' };
+      }
+      if (filterParams.name) {
+        filter.name = { $regex: filterParams.name, $options: 'i' };
+      }
+      if (filterParams.status) {
+        filter.status = filterParams.status;
+      }
+
+      const options = {
+        page: parseInt(page),
+        limit: Math.min(parseInt(limit), 100), // Max 100 items per page
+        sortBy,
+        sortOrder: sortOrder === 'desc' ? -1 : 1
+      };
+
+      const result = await this.userService.getUsersByFilter(filter, options);
+      
+      res.json({
+        success: true,
+        data: result.users,
+        pagination: result.pagination
+      });
+      
+    } catch (error) {
+      console.error('Get users error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch users'
+      });
+    }
+  }
+
+  // Update user
+  async updateUser(req, res) {
+    try {
+      const { id } = req.params;
+      const updateData = req.body;
+      
+      // Remove fields that shouldn't be updated directly
+      delete updateData._id;
+      delete updateData.createdAt;
+      delete updateData.updatedAt;
+
+      const user = await this.userService.updateUser(id, updateData);
+      
+      res.json({
+        success: true,
+        data: user,
+        message: 'User updated successfully'
+      });
+      
+    } catch (error) {
+      console.error('Update user error:', error);
+      
+      if (error.message === 'User not found') {
+        return res.status(404).json({
+          success: false,
+          error: 'User not found'
+        });
+      }
+      
+      res.status(500).json({
+        success: false,
+        error: 'Failed to update user'
+      });
+    }
+  }
+
+  // Delete user
+  async deleteUser(req, res) {
+    try {
+      const { id } = req.params;
+      const result = await this.userService.deleteUser(id);
+      
+      res.json({
+        success: true,
+        data: result,
+        message: 'User deleted successfully'
+      });
+      
+    } catch (error) {
+      console.error('Delete user error:', error);
+      
+      if (error.message === 'User not found') {
+        return res.status(404).json({
+          success: false,
+          error: 'User not found'
+        });
+      }
+      
+      res.status(500).json({
+        success: false,
+        error: 'Failed to delete user'
+      });
+    }
+  }
+
+  // Bulk create users
+  async bulkCreateUsers(req, res) {
+    try {
+      const { users } = req.body;
+      
+      if (!Array.isArray(users) || users.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Users array is required'
+        });
+      }
+
+      const result = await this.userService.bulkCreateUsers(users);
+      
+      res.status(201).json({
+        success: true,
+        data: result,
+        message: `${result.insertedCount} users created successfully`
+      });
+      
+    } catch (error) {
+      console.error('Bulk create users error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to create users'
+      });
+    }
+  }
+}
+
+module.exports = UserController;
