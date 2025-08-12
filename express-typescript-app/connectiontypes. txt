@@ -1,0 +1,76 @@
+// connection-types.ts
+import { MongoClientOptions, Db, MongoClient } from 'mongodb';
+
+export interface ConnectionConfig {
+  uri: string;
+  options?: MongoClientOptions;
+  databaseName?: string;
+  retryConnection?: ConnectionRetryConfig;
+  pooling?: ConnectionPoolConfig;
+  monitoring?: ConnectionMonitoringConfig;
+}
+
+export interface ConnectionRetryConfig {
+  maxRetries?: number;
+  baseDelay?: number;
+  maxDelay?: number;
+  backoffMultiplier?: number;
+  jitter?: boolean;
+  retryableErrors?: string[];
+  onConnectionRetry?: ConnectionRetryCallback;
+  onConnectionFailure?: ConnectionFailureCallback;
+}
+
+export interface ConnectionPoolConfig {
+  minPoolSize?: number;
+  maxPoolSize?: number;
+  maxIdleTimeMS?: number;
+  waitQueueTimeoutMS?: number;
+  maxConnecting?: number;
+}
+
+export interface ConnectionMonitoringConfig {
+  enableMonitoring?: boolean;
+  logConnections?: boolean;
+  onConnect?: () => Promise<void> | void;
+  onDisconnect?: () => Promise<void> | void;
+  onError?: (error: Error) => Promise<void> | void;
+  onReconnect?: () => Promise<void> | void;
+}
+
+export interface ConnectionState {
+  isConnected: boolean;
+  client: MongoClient | null;
+  database: Db | null;
+  connectionAttempts: number;
+  lastConnectionTime: number | null;
+  lastError: Error | null;
+}
+
+export interface ConnectionAttempt {
+  attempt: number;
+  timestamp: string;
+  error?: string;
+  duration: number;
+  success: boolean;
+}
+
+export interface ConnectionMetrics {
+  totalAttempts: number;
+  totalConnectionTime: number;
+  connectionHistory: ConnectionAttempt[];
+  isHealthy: boolean;
+  uptime: number;
+}
+
+export type ConnectionRetryCallback = (
+  error: Error,
+  attempt: number,
+  delay: number
+) => Promise<void> | void;
+
+export type ConnectionFailureCallback = (
+  error: Error,
+  attempts: number,
+  totalTime: number
+) => Promise<void> | void;
