@@ -119,22 +119,24 @@ export class RetryUtils {
   } {
     const successful = results.filter(
       (r): r is PromiseFulfilledResult<any> => 
-        r.status === 'fulfilled' && !('error' in r.value)
+        r.status === 'fulfilled' && r.value && !('error' in r.value)
     );
     
     const failed = results.filter(
       (r): r is PromiseRejectedResult | PromiseFulfilledResult<{ error: Error }> => 
-        r.status === 'rejected' || (r.status === 'fulfilled' && 'error' in r.value)
+        r.status === 'rejected' || (r.status === 'fulfilled' && r.value && 'error' in r.value)
     );
     
-    const totalInserted = successful.reduce((sum, r) => 
-      sum + (r.value.result?.insertedCount ?? 0), 0);
+    const totalInserted = successful.reduce((sum, r) => {
+      const insertedCount = r.value?.result?.insertedCount;
+      return sum + (typeof insertedCount === 'number' ? insertedCount : 0);
+    }, 0);
     
     return {
       successful: successful.map(r => r.value),
       failed: failed.map(r => ({
-        error: r.status === 'rejected' ? r.reason : (r.value as any).error,
-        chunk: r.status === 'rejected' ? [] : (r.value as any).chunk
+        error: r.status === 'rejected' ? r.reason : (r.value as any)?.error,
+        chunk: r.status === 'rejected' ? [] : (r.value as any)?.chunk ?? []
       })),
       totalInserted
     };
