@@ -1,0 +1,291 @@
+// routes/userRoutes.js
+const express = require('express');
+const UserController = require('../controllers/userController');
+
+const router = express.Router();
+const userController = new UserController();
+
+// Bind methods to preserve 'this' context
+router.post('/', userController.createUser.bind(userController));
+router.get('/', userController.getUsers.bind(userController));
+router.get('/:id', userController.getUserById.bind(userController));
+router.put('/:id', userController.updateUser.bind(userController));
+router.delete('/:id', userController.deleteUser.bind(userController));
+router.post('/bulk', userController.bulkCreateUsers.bind(userController));
+
+module.exports = router;
+
+// app.js or server.js
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const databaseManager = require('./utils/database');
+const userRoutes = require('./routes/userRoutes');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
+// Routes
+app.use('/api/users', userRoutes);
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    database: databaseManager.database ? 'Connected' : 'Disconnected'
+  });
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error'
+  });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Route not found'
+  });
+});
+
+// Initialize database and start server
+async function startServer() {
+  try {
+    // Initialize database connection
+    await databaseManager.initialize();
+    console.log('Database initialized successfully');
+    
+    // Start server
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      console.log(`Health check: http://localhost:${PORT}/health`);
+    });
+    
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('Received SIGINT. Graceful shutdown...');
+  await databaseManager.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('Received SIGTERM. Graceful shutdown...');
+  await databaseManager.close();
+  process.exit(0);
+});
+
+startServer();
+
+// .env file example
+/*
+NODE_ENV=development
+PORT=3000
+DATABASE_NAME=myapp
+COSMOS_DB_CONNECTION_STRING=mongodb://your-cosmos-account:your-key@your-cosmos-account.mongo.cosmos.azure.com:10255/your-database?ssl=true&replicaSet=globaldb&maxIdleTimeMS=120000&appName=@your-cosmos-account@
+*/
+
+// package.json
+/*
+{
+  "name": "mongo-cosmos-retry-api",
+  "version": "1.0.0",
+  "description": "MongoDB Cosmos DB API with retry logic",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "mongodb": "^5.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.20",
+    "jest": "^29.0.0"
+  }
+}
+*/
+
+// middleware/validation.js - Optional validation middleware
+const { body, param, validationResult } = require('express-validator');
+
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      error: 'Validation failed',
+      details: errors.array()
+    });
+  }
+  next();
+};
+
+const validateCreateUser = [
+  body('name')
+    .trim()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Name must be between 2 and 50 characters'),
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Valid email is required'),
+  body('age')
+    .optional()
+    .isInt({ min: 0, max: 150 })
+    .withMessage('Age must be between 0 and 150'),
+  handleValidationErrors
+];
+
+const validateUpdateUser = [
+  param('id')
+    .isMongoId()
+    .withMessage('Valid user ID is required'),
+  body('name')
+    .optional()
+    .trim()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Name must be between 2 and 50 characters'),
+  body('email')
+    .optional()
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Valid email is required'),
+  handleValidationErrors
+];
+
+const validateUserId = [
+  param('id')
+    .isMongoId()
+    .withMessage('Valid user ID is required'),
+  handleValidationErrors
+];
+
+module.exports = {
+  validateCreateUser,
+  validateUpdateUser,
+  validateUserId
+};
+
+// services/orderService.js - Example of another service
+const databaseManager = require('../utils/database');
+
+class OrderService {
+  constructor() {
+    this.collectionName = 'orders';
+  }
+
+  async createOrder(orderData) {
+    return databaseManager.executeWithRetry(async () => {
+      const collection = databaseManager.getCollection(this.collectionName);
+      
+      const order = {
+        ...orderData,
+        orderNumber: this.generateOrderNumber(),
+        status: 'pending',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      
+      const result = await collection.insertOne(order);
+      
+      return {
+        id: result.insertedId,
+        ...order
+      };
+    });
+  }
+
+  async getOrdersByUserId(userId, options = {}) {
+    return databaseManager.executeWithRetry(async () => {
+      const collection = databaseManager.getCollection(this.collectionName);
+      const { ObjectId } = require('mongodb');
+      
+      const {
+        page = 1,
+        limit = 10,
+        status = null
+      } = options;
+      
+      const filter = { userId: new ObjectId(userId) };
+      if (status) filter.status = status;
+      
+      const skip = (page - 1) * limit;
+      
+      const orders = await collection
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .toArray();
+      
+      const total = await collection.countDocuments(filter);
+      
+      return {
+        orders,
+        pagination: {
+          page,
+          limit,
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      };
+    });
+  }
+
+  async updateOrderStatus(orderId, status) {
+    return databaseManager.executeWithRetry(async () => {
+      const collection = databaseManager.getCollection(this.collectionName);
+      const { ObjectId } = require('mongodb');
+      
+      const result = await collection.findOneAndUpdate(
+        { _id: new ObjectId(orderId) },
+        { 
+          $set: { 
+            status, 
+            updatedAt: new Date() 
+          }
+        },
+        { returnDocument: 'after' }
+      );
+      
+      if (!result.value) {
+        throw new Error('Order not found');
+      }
+      
+      return result.value;
+    });
+  }
+
+  generateOrderNumber() {
+    return `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+  }
+}
+
+module.exports = OrderService;
