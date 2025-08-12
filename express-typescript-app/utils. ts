@@ -1,0 +1,142 @@
+// utils.ts
+import { MongoError } from 'mongodb';
+
+export class RetryUtils {
+  /**
+   * Check if an error is retryable based on error name and code
+   */
+  static isRetryableError(
+    error: MongoError,
+    retryableErrors: string[],
+    retryableCodes: number[]
+  ): boolean {
+    // Check error name/type
+    if (retryableErrors.includes(error.name)) {
+      return true;
+    }
+    
+    // Check error code
+    if (error.code && retryableCodes.includes(error.code)) {
+      return true;
+    }
+    
+    // Check for specific write concern errors
+    if ((error as any).writeConcernError) {
+      const writeConcernCode = (error as any).writeConcernError.code;
+      return retryableCodes.includes(writeConcernCode);
+    }
+    
+    return false;
+  }
+
+  /**
+   * Calculate delay with exponential backoff and optional jitter
+   */
+  static calculateDelay(
+    attempt: number,
+    baseDelay: number,
+    maxDelay: number,
+    backoffMultiplier: number,
+    jitter: boolean
+  ): number {
+    let delay = baseDelay * Math.pow(backoffMultiplier, attempt - 1);
+    delay = Math.min(delay, maxDelay);
+    
+    // Add jitter to prevent thundering herd
+    if (jitter) {
+      delay = delay * (0.5 + Math.random() * 0.5);
+    }
+    
+    return Math.floor(delay);
+  }
+
+  /**
+   * Create a promise that rejects after specified timeout
+   */
+  static createTimeoutPromise<T>(timeout: number, message?: string): Promise<T> {
+    return new Promise((_, reject) => {
+      setTimeout(
+        () => reject(new Error(message || `Operation timed out after ${timeout}ms`)),
+        timeout
+      );
+    });
+  }
+
+  /**
+   * Create a delay promise
+   */
+  static delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Split an array into chunks of specified size
+   */
+  static chunkArray<T>(array: T[], chunkSize: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < array.length; i += chunkSize) {
+      chunks.push(array.slice(i, i + chunkSize));
+    }
+    return chunks;
+  }
+
+  /**
+   * Get default retryable error names
+   */
+  static getDefaultRetryableErrors(): string[] {
+    return [
+      'MongoNetworkError',
+      'MongoTimeoutError',
+      'MongoServerSelectionError',
+      'MongoWriteConcernError'
+    ];
+  }
+
+  /**
+   * Get default retryable error codes
+   */
+  static getDefaultRetryableCodes(): number[] {
+    return [
+      11600, // InterruptedAtShutdown
+      11602, // InterruptedDueToReplStateChange
+      10107, // NotWritablePrimary
+      13435, // NotPrimaryNoSecondaryOk
+      13436, // NotPrimaryOrSecondary
+      189,   // PrimarySteppedDown
+      91     // ShutdownInProgress
+    ];
+  }
+
+  /**
+   * Aggregate results from batch operations
+   */
+  static aggregateBatchResults(
+    results: PromiseSettledResult<any>[]
+  ): {
+    successful: any[];
+    failed: any[];
+    totalInserted: number;
+  } {
+    const successful = results.filter(
+      (r): r is PromiseFulfilledResult<any> => 
+        r.status === 'fulfilled' && !('error' in r.value)
+    );
+    
+    const failed = results.filter(
+      (r): r is PromiseRejectedResult | PromiseFulfilledResult<{ error: Error }> => 
+        r.status === 'rejected' || (r.status === 'fulfilled' && 'error' in r.value)
+    );
+    
+    const totalInserted = successful.reduce((sum, r) => 
+      sum + (r.value.result?.insertedCount ?? 0), 0);
+    
+    return {
+      successful: successful.map(r => r.value),
+      failed: failed.map(r => ({
+        error: r.status === 'rejected' ? r.reason : (r.value as any).error,
+        chunk: r.status === 'rejected' ? [] : (r.value as any).chunk
+      })),
+      totalInserted
+    };
+  }
+}
