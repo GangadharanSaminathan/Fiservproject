@@ -1,0 +1,262 @@
+// retry-handler.ts
+import { Collection, InsertManyResult, BulkWriteOptions, MongoError } from 'mongodb';
+import {
+  RetryConfig,
+  Document,
+  InsertResult,
+  BatchOptions,
+  BatchResult,
+  AttemptResult,
+  RetryMetrics,
+  ProgressInfo
+} from './types';
+import { MongoRetryError } from './errors';
+import { CircuitBreaker } from './circuit-breaker';
+import { RetryUtils } from './utils';
+
+export class MongoRetryHandler {
+  private readonly config: Required<Omit<RetryConfig, 'onRetry' | 'onFailure' | 'circuit'>> & {
+    onRetry: RetryConfig['onRetry'];
+    onFailure: RetryConfig['onFailure'];
+    circuit: RetryConfig['circuit'];
+  };
+  
+  private readonly circuitBreaker?: CircuitBreaker;
+
+  constructor(options: RetryConfig = {}) {
+    this.config = {
+      maxRetries: options.maxRetries ?? 5,
+      baseDelay: options.baseDelay ?? 1000,
+      maxDelay: options.maxDelay ?? 30000,
+      backoffMultiplier: options.backoffMultiplier ?? 2,
+      jitter: options.jitter ?? true,
+      retryableErrors: options.retryableErrors ?? RetryUtils.getDefaultRetryableErrors(),
+      retryableCodes: options.retryableCodes ?? RetryUtils.getDefaultRetryableCodes(),
+      onRetry: options.onRetry ?? null,
+      onFailure: options.onFailure ?? null,
+      circuit: options.circuit ?? null
+    };
+    
+    if (this.config.circuit) {
+      this.circuitBreaker = new CircuitBreaker(this.config.circuit);
+    }
+  }
+
+  /**
+   * Insert many documents with retry logic
+   */
+  async insertManyWithRetry<T extends Document = Document>(
+    collection: Collection<T>,
+    batch: T[],
+    mongoOptions: BulkWriteOptions = {}
+  ): Promise<InsertResult<T>> {
+    // Check circuit breaker
+    this.circuitBreaker?.shouldPreventExecution();
+
+    const options: BulkWriteOptions = {
+      ordered: false,
+      writeConcern: {
+        w: 'majority',
+        j: true,
+        wtimeout: 10000
+      },
+      ...mongoOptions
+    };
+
+    let attempt = 0;
+    let lastError: Error | null = null;
+    const startTime = Date.now();
+    const attemptResults: AttemptResult[] = [];
+
+    while (attempt <= this.config.maxRetries) {
+      try {
+        const attemptStart = Date.now();
+        
+        const result = await Promise.race([
+          collection.insertMany(batch, options),
+          RetryUtils.createTimeoutPromise<InsertManyResult<T>>(
+            options.writeConcern?.wtimeout ?? 30000
+          )
+        ]);
+
+        // Success - reset circuit breaker
+        this.circuitBreaker?.recordSuccess();
+        
+        const metrics: RetryMetrics = {
+          totalAttempts: attempt + 1,
+          totalTime: Date.now() - startTime,
+          lastAttemptTime: Date.now() - attemptStart,
+          insertedCount: result.insertedCount,
+          attemptHistory: attemptResults
+        };
+
+        return { result, metrics };
+
+      } catch (error) {
+        const mongoError = error as MongoError;
+        lastError = mongoError;
+        attempt++;
+        
+        const attemptResult: AttemptResult = {
+          attempt,
+          error: mongoError.message,
+          errorCode: mongoError.code,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - (attemptResults[attempt - 2]?.timestamp 
+            ? new Date(attemptResults[attempt - 2].timestamp).getTime() 
+            : startTime)
+        };
+        
+        attemptResults.push(attemptResult);
+
+        // Check if we should retry
+        if (!this.shouldRetry(mongoError, attempt)) {
+          this.circuitBreaker?.recordFailure();
+          
+          if (this.config.onFailure) {
+            await this.config.onFailure(mongoError, {
+              attempts: attempt,
+              totalTime: Date.now() - startTime,
+              batch,
+              attemptHistory: attemptResults
+            });
+          }
+          
+          throw new MongoRetryError(
+            `MongoDB insertMany failed after ${attempt} attempts: ${mongoError.message}`,
+            mongoError,
+            attempt,
+            Date.now() - startTime,
+            attemptResults
+          );
+        }
+
+        // Calculate delay and execute retry callback
+        const delay = RetryUtils.calculateDelay(
+          attempt,
+          this.config.baseDelay,
+          this.config.maxDelay,
+          this.config.backoffMultiplier,
+          this.config.jitter
+        );
+        
+        if (this.config.onRetry) {
+          await this.config.onRetry(mongoError, {
+            attempt,
+            delay,
+            totalTime: Date.now() - startTime,
+            nextRetryAt: new Date(Date.now() + delay).toISOString()
+          });
+        }
+
+        console.warn(`MongoDB insertMany attempt ${attempt} failed: ${mongoError.message}`);
+        console.warn(`Retrying in ${delay}ms...`);
+        
+        await RetryUtils.delay(delay);
+      }
+    }
+
+    throw lastError!;
+  }
+
+  /**
+   * Insert many documents in batches with concurrency control
+   */
+  async insertManyBatched<T extends Document = Document>(
+    collection: Collection<T>,
+    documents: T[],
+    options: BatchOptions = {}
+  ): Promise<BatchResult> {
+    const {
+      batchSize = 1000,
+      concurrency = 3,
+      mongoOptions = {},
+      progressCallback = null
+    } = options;
+
+    const chunks = RetryUtils.chunkArray(documents, batchSize);
+    const results: PromiseSettledResult<InsertResult<T> | { error: Error; chunk: T[] }>[] = [];
+    let processed = 0;
+
+    // Process chunks with controlled concurrency
+    for (let i = 0; i < chunks.length; i += concurrency) {
+      const batch = chunks.slice(i, i + concurrency);
+      
+      const batchPromises = batch.map(async (chunk, index): Promise<InsertResult<T> | { error: Error; chunk: T[] }> => {
+        try {
+          const result = await this.insertManyWithRetry(collection, chunk, mongoOptions);
+          processed += chunk.length;
+          
+          if (progressCallback) {
+            await progressCallback({
+              processed,
+              total: documents.length,
+              percentage: Math.round((processed / documents.length) * 100),
+              currentBatch: i + index + 1,
+              totalBatches: chunks.length
+            });
+          }
+          
+          return result;
+        } catch (error) {
+          return { error: error as Error, chunk };
+        }
+      });
+
+      const batchResults = await Promise.allSettled(batchPromises);
+      results.push(...batchResults);
+    }
+
+    return this.aggregateBatchResults(results);
+  }
+
+  /**
+   * Get circuit breaker state (if enabled)
+   */
+  getCircuitBreakerState() {
+    return this.circuitBreaker?.getState() ?? null;
+  }
+
+  /**
+   * Reset circuit breaker (if enabled)
+   */
+  resetCircuitBreaker(): void {
+    this.circuitBreaker?.reset();
+  }
+
+  /**
+   * Get current configuration
+   */
+  getConfig() {
+    return { ...this.config };
+  }
+
+  private shouldRetry(error: MongoError, attempt: number): boolean {
+    if (attempt > this.config.maxRetries) {
+      return false;
+    }
+
+    return RetryUtils.isRetryableError(
+      error,
+      this.config.retryableErrors,
+      this.config.retryableCodes
+    );
+  }
+
+  private aggregateBatchResults(
+    results: PromiseSettledResult<InsertResult<any> | { error: Error; chunk: any[] }>[]
+  ): BatchResult {
+    const aggregated = RetryUtils.aggregateBatchResults(results);
+    
+    return {
+      totalInserted: aggregated.totalInserted,
+      successfulBatches: aggregated.successful.length,
+      failedBatches: aggregated.failed.length,
+      totalBatches: results.length,
+      details: {
+        successful: aggregated.successful,
+        failed: aggregated.failed
+      }
+    };
+  }
+}
