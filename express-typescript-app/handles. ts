@@ -97,14 +97,17 @@ export class MongoRetryHandler {
         lastError = mongoError;
         attempt++;
         
+        const previousAttempt = attemptResults[attempt - 2];
+        const previousAttemptTime = previousAttempt 
+          ? new Date(previousAttempt.timestamp).getTime() 
+          : startTime;
+
         const attemptResult: AttemptResult = {
           attempt,
           error: mongoError.message,
           errorCode: mongoError.code,
           timestamp: new Date().toISOString(),
-          duration: Date.now() - (attemptResults[attempt - 2]?.timestamp 
-            ? new Date(attemptResults[attempt - 2].timestamp).getTime() 
-            : startTime)
+          duration: Date.now() - previousAttemptTime
         };
         
         attemptResults.push(attemptResult);
