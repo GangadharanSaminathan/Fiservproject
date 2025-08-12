@@ -1,0 +1,229 @@
+// type-safe-helpers.ts
+import { InsertManyResult } from 'mongodb';
+import { AttemptResult, InsertResult } from './types';
+
+/**
+ * Type-safe helper functions to handle potential undefined values
+ */
+export class TypeSafeHelpers {
+  /**
+   * Safely get the previous attempt from attempt history
+   */
+  static getPreviousAttempt(
+    attemptResults: AttemptResult[],
+    currentAttempt: number
+  ): AttemptResult | null {
+    const index = currentAttempt - 2; // -1 for zero-based, -1 for previous
+    return index >= 0 && index < attemptResults.length 
+      ? attemptResults[index] 
+      : null;
+  }
+
+  /**
+   * Safely calculate duration from previous attempt
+   */
+  static calculateAttemptDuration(
+    attemptResults: AttemptResult[],
+    currentAttempt: number,
+    startTime: number
+  ): number {
+    const previousAttempt = this.getPreviousAttempt(attemptResults, currentAttempt);
+    const previousTime = previousAttempt 
+      ? new Date(previousAttempt.timestamp).getTime()
+      : startTime;
+    
+    return Date.now() - previousTime;
+  }
+
+  /**
+   * Safely extract error code from MongoDB error
+   */
+  static getErrorCode(error: any): number | undefined {
+    if (typeof error === 'object' && error !== null) {
+      return typeof error.code === 'number' ? error.code : undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * Safely extract error message
+   */
+  static getErrorMessage(error: any): string {
+    if (error && typeof error.message === 'string') {
+      return error.message;
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    return 'Unknown error';
+  }
+
+  /**
+   * Safely extract inserted count from result
+   */
+  static getInsertedCount(result: InsertManyResult<any> | undefined | null): number {
+    return result?.insertedCount ?? 0;
+  }
+
+  /**
+   * Type guard to check if a value is a valid InsertResult
+   */
+  static isValidInsertResult<T>(value: any): value is InsertResult<T> {
+    return (
+      value &&
+      typeof value === 'object' &&
+      'result' in value &&
+      'metrics' in value &&
+      value.result &&
+      typeof value.result.insertedCount === 'number'
+    );
+  }
+
+  /**
+   * Type guard to check if a value is an error result
+   */
+  static isErrorResult(value: any): value is { error: Error; chunk: any[] } {
+    return (
+      value &&
+      typeof value === 'object' &&
+      'error' in value &&
+      value.error instanceof Error
+    );
+  }
+
+  /**
+   * Safely access nested object properties
+   */
+  static safeGet<T>(obj: any, path: string[], defaultValue: T): T {
+    let current = obj;
+    
+    for (const key of path) {
+      if (current && typeof current === 'object' && key in current) {
+        current = current[key];
+      } else {
+        return defaultValue;
+      }
+    }
+    
+    return current !== undefined && current !== null ? current : defaultValue;
+  }
+
+  /**
+   * Create a safe attempt result with proper defaults
+   */
+  static createAttemptResult(
+    attempt: number,
+    error: any,
+    startTime: number,
+    attemptResults: AttemptResult[]
+  ): AttemptResult {
+    return {
+      attempt,
+      error: this.getErrorMessage(error),
+      errorCode: this.getErrorCode(error),
+      timestamp: new Date().toISOString(),
+      duration: this.calculateAttemptDuration(attemptResults, attempt, startTime)
+    };
+  }
+
+  /**
+   * Validate and sanitize retry configuration
+   */
+  static validateRetryConfig(config: any): {
+    isValid: boolean;
+    errors: string[];
+    sanitized: any;
+  } {
+    const errors: string[] = [];
+    const sanitized: any = {};
+
+    // Validate maxRetries
+    if (config.maxRetries !== undefined) {
+      if (typeof config.maxRetries !== 'number' || config.maxRetries < 0) {
+        errors.push('maxRetries must be a non-negative number');
+      } else {
+        sanitized.maxRetries = Math.floor(config.maxRetries);
+      }
+    }
+
+    // Validate delays
+    if (config.baseDelay !== undefined) {
+      if (typeof config.baseDelay !== 'number' || config.baseDelay < 0) {
+        errors.push('baseDelay must be a non-negative number');
+      } else {
+        sanitized.baseDelay = config.baseDelay;
+      }
+    }
+
+    if (config.maxDelay !== undefined) {
+      if (typeof config.maxDelay !== 'number' || config.maxDelay < 0) {
+        errors.push('maxDelay must be a non-negative number');
+      } else {
+        sanitized.maxDelay = config.maxDelay;
+      }
+    }
+
+    // Validate arrays
+    if (config.retryableErrors !== undefined) {
+      if (Array.isArray(config.retryableErrors)) {
+        sanitized.retryableErrors = config.retryableErrors.filter(
+          (error: any) => typeof error === 'string'
+        );
+      } else {
+        errors.push('retryableErrors must be an array of strings');
+      }
+    }
+
+    if (config.retryableCodes !== undefined) {
+      if (Array.isArray(config.retryableCodes)) {
+        sanitized.retryableCodes = config.retryableCodes.filter(
+          (code: any) => typeof code === 'number'
+        );
+      } else {
+        errors.push('retryableCodes must be an array of numbers');
+      }
+    }
+
+    return {
+      isValid: errors.length === 0,
+      errors,
+      sanitized
+    };
+  }
+
+  /**
+   * Safely filter and type-check batch results
+   */
+  static filterBatchResults<T>(
+    results: PromiseSettledResult<any>[]
+  ): {
+    successful: Array<InsertResult<T>>;
+    failed: Array<{ error: Error; chunk: T[] }>;
+  } {
+    const successful: Array<InsertResult<T>> = [];
+    const failed: Array<{ error: Error; chunk: T[] }> = [];
+
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        if (this.isValidInsertResult<T>(result.value)) {
+          successful.push(result.value);
+        } else if (this.isErrorResult(result.value)) {
+          failed.push({
+            error: result.value.error,
+            chunk: Array.isArray(result.value.chunk) ? result.value.chunk : []
+          });
+        }
+      } else {
+        // PromiseRejectedResult
+        failed.push({
+          error: result.reason instanceof Error 
+            ? result.reason 
+            : new Error(this.getErrorMessage(result.reason)),
+          chunk: []
+        });
+      }
+    }
+
+    return { successful, failed };
+  }
+}
