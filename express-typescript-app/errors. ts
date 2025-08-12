@@ -1,0 +1,72 @@
+// errors.ts
+import { AttemptResult } from './types';
+
+export class MongoRetryError extends Error {
+  public readonly originalError: Error;
+  public readonly retryContext: {
+    attempts: number;
+    totalTime: number;
+    attemptHistory: AttemptResult[];
+  };
+
+  constructor(
+    message: string,
+    originalError: Error,
+    attempts: number,
+    totalTime: number,
+    attemptHistory: AttemptResult[]
+  ) {
+    super(message);
+    this.name = 'MongoRetryError';
+    this.originalError = originalError;
+    this.retryContext = {
+      attempts,
+      totalTime,
+      attemptHistory
+    };
+
+    // Maintains proper stack trace for where our error was thrown (only available on V8)
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, MongoRetryError);
+    }
+  }
+
+  /**
+   * Get a summary of retry attempts
+   */
+  getAttemptsSummary(): string {
+    return this.retryContext.attemptHistory
+      .map(attempt => `Attempt ${attempt.attempt}: ${attempt.error} (${attempt.duration}ms)`)
+      .join('\n');
+  }
+
+  /**
+   * Check if the original error was a specific MongoDB error
+   */
+  isOriginalError(errorName: string): boolean {
+    return this.originalError.name === errorName;
+  }
+
+  /**
+   * Check if the original error had a specific MongoDB error code
+   */
+  hasOriginalErrorCode(code: number): boolean {
+    return (this.originalError as any).code === code;
+  }
+}
+
+export class CircuitBreakerError extends Error {
+  public readonly failures: number;
+  public readonly lastFailureTime: number;
+
+  constructor(failures: number, lastFailureTime: number) {
+    super(`Circuit breaker is OPEN - ${failures} consecutive failures detected`);
+    this.name = 'CircuitBreakerError';
+    this.failures = failures;
+    this.lastFailureTime = lastFailureTime;
+
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, CircuitBreakerError);
+    }
+  }
+}
