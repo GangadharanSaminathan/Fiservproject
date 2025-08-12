@@ -1,0 +1,574 @@
+// connection-manager.ts
+import { MongoClient, MongoClientOptions, Db, Collection } from 'mongodb';
+import {
+  ConnectionConfig,
+  ConnectionState,
+  ConnectionAttempt,
+  ConnectionMetrics,
+  ConnectionRetryConfig,
+  Document
+} from './connection-types';
+import { RetryUtils } from './utils';
+import { TypeSafeHelpers } from './type-safe-helpers';
+
+export class MongoConnectionManager {
+  private readonly config: ConnectionConfig;
+  private state: ConnectionState;
+  private connectionHistory: ConnectionAttempt[] = [];
+  private connectStartTime: number | null = null;
+
+  constructor(config: ConnectionConfig) {
+    this.config = {
+      ...config,
+      retryConnection: {
+        maxRetries: 5,
+        baseDelay: 1000,
+        maxDelay: 30000,
+        backoffMultiplier: 2,
+        jitter: true,
+        retryableErrors: [
+          'MongoNetworkError',
+          'MongoServerSelectionError',
+          'MongoTimeoutError'
+        ],
+        ...config.retryConnection
+      },
+      pooling: {
+        minPoolSize: 5,
+        maxPoolSize: 50,
+        maxIdleTimeMS: 30000,
+        waitQueueTimeoutMS: 2000,
+        maxConnecting: 2,
+        ...config.pooling
+      }
+    };
+
+    this.state = {
+      isConnected: false,
+      client: null,
+      database: null,
+      connectionAttempts: 0,
+      lastConnectionTime: null,
+      lastError: null
+    };
+  }
+
+  /**
+   * Connect to MongoDB with retry logic
+   */
+  async connect(): Promise<{ client: MongoClient; database: Db }> {
+    if (this.state.isConnected && this.state.client && this.state.database) {
+      return { client: this.state.client, database: this.state.database };
+    }
+
+    const retryConfig = this.config.retryConnection!;
+    let attempt = 0;
+    let lastError: Error | null = null;
+    this.connectStartTime = Date.now();
+
+    while (attempt <= retryConfig.maxRetries!) {
+      const attemptStart = Date.now();
+      
+      try {
+        // Create MongoDB client options
+        const clientOptions: MongoClientOptions = {
+          serverSelectionTimeoutMS: 5000,
+          connectTimeoutMS: 10000,
+          socketTimeoutMS: 45000,
+          heartbeatFrequencyMS: 10000,
+          retryReads: true,
+          retryWrites: true,
+          ...this.config.pooling,
+          ...this.config.options
+        };
+
+        // Create and connect client
+        const client = new MongoClient(this.config.uri, clientOptions);
+        await client.connect();
+
+        // Test the connection
+        await client.db('admin').admin().ping();
+
+        // Get database
+        const database = this.config.databaseName 
+          ? client.db(this.config.databaseName)
+          : client.db();
+
+        // Update state
+        this.state = {
+          isConnected: true,
+          client,
+          database,
+          connectionAttempts: attempt + 1,
+          lastConnectionTime: Date.now(),
+          lastError: null
+        };
+
+        // Record successful attempt
+        this.recordConnectionAttempt(attempt + 1, attemptStart, true);
+
+        // Setup monitoring
+        this.setupConnectionMonitoring(client);
+
+        // Call success callback
+        if (this.config.monitoring?.onConnect) {
+          try {
+            await this.config.monitoring.onConnect();
+          } catch (callbackError) {
+            console.warn('Error in onConnect callback:', callbackError);
+          }
+        }
+
+        console.log(`✅ MongoDB connected successfully (attempt ${attempt + 1})`);
+        return { client, database };
+
+      } catch (error) {
+        const mongoError = error as Error;
+        lastError = mongoError;
+        attempt++;
+
+        // Record failed attempt
+        this.recordConnectionAttempt(attempt, attemptStart, false, mongoError);
+
+        // Update state
+        this.state.lastError = mongoError;
+        this.state.connectionAttempts = attempt;
+
+        // Check if we should retry
+        if (!this.shouldRetryConnection(mongoError, attempt, retryConfig)) {
+          // Call failure callback
+          if (retryConfig.onConnectionFailure) {
+            try {
+              await retryConfig.onConnectionFailure(
+                mongoError,
+                attempt,
+                Date.now() - this.connectStartTime!
+              );
+            } catch (callbackError) {
+              console.warn('Error in onConnectionFailure callback:', callbackError);
+            }
+          }
+
+          throw new Error(
+            `Failed to connect to MongoDB after ${attempt} attempts: ${TypeSafeHelpers.getErrorMessage(mongoError)}`
+          );
+        }
+
+        // Calculate delay
+        const delay = RetryUtils.calculateDelay(
+          attempt,
+          retryConfig.baseDelay!,
+          retryConfig.maxDelay!,
+          retryConfig.backoffMultiplier!,
+          retryConfig.jitter!
+        );
+
+        // Call retry callback
+        if (retryConfig.onConnectionRetry) {
+          try {
+            await retryConfig.onConnectionRetry(mongoError, attempt, delay);
+          } catch (callbackError) {
+            console.warn('Error in onConnectionRetry callback:', callbackError);
+          }
+        }
+
+        console.warn(`🔄 Connection attempt ${attempt} failed: ${TypeSafeHelpers.getErrorMessage(mongoError)}`);
+        console.warn(`   Retrying in ${delay}ms...`);
+
+        await RetryUtils.delay(delay);
+      }
+    }
+
+    throw lastError ?? new Error('Unknown connection error');
+  }
+
+  /**
+   * Disconnect from MongoDB
+   */
+  async disconnect(): Promise<void> {
+    if (this.state.client) {
+      try {
+        await this.state.client.close();
+        
+        // Call disconnect callback
+        if (this.config.monitoring?.onDisconnect) {
+          await this.config.monitoring.onDisconnect();
+        }
+        
+        console.log('✅ MongoDB disconnected successfully');
+      } catch (error) {
+        console.warn('⚠️ Error during disconnect:', error);
+      }
+    }
+
+    this.state = {
+      isConnected: false,
+      client: null,
+      database: null,
+      connectionAttempts: 0,
+      lastConnectionTime: null,
+      lastError: null
+    };
+  }
+
+  /**
+   * Get a typed collection
+   */
+  getCollection<T extends Document = Document>(name: string): Collection<T> {
+    if (!this.state.database) {
+      throw new Error('Not connected to MongoDB. Call connect() first.');
+    }
+    
+    return this.state.database.collection<T>(name);
+  }
+
+  /**
+   * Get the database instance
+   */
+  getDatabase(): Db {
+    if (!this.state.database) {
+      throw new Error('Not connected to MongoDB. Call connect() first.');
+    }
+    
+    return this.state.database;
+  }
+
+  /**
+   * Get the client instance
+   */
+  getClient(): MongoClient {
+    if (!this.state.client) {
+      throw new Error('Not connected to MongoDB. Call connect() first.');
+    }
+    
+    return this.state.client;
+  }
+
+  /**
+   * Check if connected and healthy
+   */
+  async isHealthy(): Promise<boolean> {
+    if (!this.state.isConnected || !this.state.client) {
+      return false;
+    }
+
+    try {
+      await this.state.client.db('admin').admin().ping();
+      return true;
+    } catch (error) {
+      console.warn('Health check failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get connection state
+   */
+  getState(): Readonly<ConnectionState> {
+    return { ...this.state };
+  }
+
+  /**
+   * Get connection metrics
+   */
+  getMetrics(): ConnectionMetrics {
+    const uptime = this.state.lastConnectionTime 
+      ? Date.now() - this.state.lastConnectionTime 
+      : 0;
+
+    const totalConnectionTime = this.connectionHistory
+      .filter(attempt => attempt.success)
+      .reduce((sum, attempt) => sum + attempt.duration, 0);
+
+    return {
+      totalAttempts: this.connectionHistory.length,
+      totalConnectionTime,
+      connectionHistory: [...this.connectionHistory],
+      isHealthy: this.state.isConnected,
+      uptime
+    };
+  }
+
+  /**
+   * Reconnect with retry logic
+   */
+  async reconnect(): Promise<{ client: MongoClient; database: Db }> {
+    console.log('🔄 Attempting to reconnect to MongoDB...');
+    
+    // Disconnect first if connected
+    if (this.state.client) {
+      await this.disconnect();
+    }
+    
+    return await this.connect();
+  }
+
+  private shouldRetryConnection(
+    error: Error,
+    attempt: number,
+    config: ConnectionRetryConfig
+  ): boolean {
+    if (attempt > (config.maxRetries ?? 5)) {
+      return false;
+    }
+
+    const retryableErrors = config.retryableErrors ?? [];
+    return retryableErrors.some(errorType => 
+      error.name === errorType || 
+      error.constructor.name === errorType ||
+      TypeSafeHelpers.getErrorMessage(error).includes(errorType)
+    );
+  }
+
+  private recordConnectionAttempt(
+    attempt: number,
+    startTime: number,
+    success: boolean,
+    error?: Error
+  ): void {
+    const connectionAttempt: ConnectionAttempt = {
+      attempt,
+      timestamp: new Date().toISOString(),
+      error: error ? TypeSafeHelpers.getErrorMessage(error) : undefined,
+      duration: Date.now() - startTime,
+      success
+    };
+
+    this.connectionHistory.push(connectionAttempt);
+
+    // Keep only last 50 attempts to prevent memory leaks
+    if (this.connectionHistory.length > 50) {
+      this.connectionHistory = this.connectionHistory.slice(-50);
+    }
+  }
+
+  private setupConnectionMonitoring(client: MongoClient): void {
+    if (!this.config.monitoring?.enableMonitoring) {
+      return;
+    }
+
+    // Connection event handlers
+    client.on('close', async () => {
+      console.log('📡 MongoDB connection closed');
+      this.state.isConnected = false;
+      
+      if (this.config.monitoring?.onDisconnect) {
+        try {
+          await this.config.monitoring.onDisconnect();
+        } catch (error) {
+          console.warn('Error in disconnect monitoring callback:', error);
+        }
+      }
+    });
+
+    client.on('error', async (error) => {
+      console.error('❌ MongoDB connection error:', error);
+      this.state.lastError = error;
+      
+      if (this.config.monitoring?.onError) {
+        try {
+          await this.config.monitoring.onError(error);
+        } catch (callbackError) {
+          console.warn('Error in error monitoring callback:', callbackError);
+        }
+      }
+    });
+
+    client.on('reconnect', async () => {
+      console.log('🔄 MongoDB reconnected');
+      this.state.isConnected = true;
+      this.state.lastConnectionTime = Date.now();
+      
+      if (this.config.monitoring?.onReconnect) {
+        try {
+          await this.config.monitoring.onReconnect();
+        } catch (error) {
+          console.warn('Error in reconnect monitoring callback:', error);
+        }
+      }
+    });
+
+    // Log connection pool events if enabled
+    if (this.config.monitoring.logConnections) {
+      client.on('connectionPoolCreated', (event) => {
+        console.log('🏊 Connection pool created:', {
+          address: event.address,
+          options: event.options
+        });
+      });
+
+      client.on('connectionPoolClosed', (event) => {
+        console.log('🏊 Connection pool closed:', { address: event.address });
+      });
+
+      client.on('connectionCreated', (event) => {
+        console.log('🔗 New connection created:', {
+          address: event.address,
+          connectionId: event.connectionId
+        });
+      });
+
+      client.on('connectionClosed', (event) => {
+        console.log('🔗 Connection closed:', {
+          address: event.address,
+          connectionId: event.connectionId,
+          reason: event.reason
+        });
+      });
+    }
+  }
+}
+
+/**
+ * Connection factory for creating pre-configured connections
+ */
+export class MongoConnectionFactory {
+  /**
+   * Create a development connection
+   */
+  static createDevelopmentConnection(databaseName: string): MongoConnectionManager {
+    return new MongoConnectionManager({
+      uri: 'mongodb://localhost:27017',
+      databaseName,
+      options: {
+        serverSelectionTimeoutMS: 5000,
+        heartbeatFrequencyMS: 10000
+      },
+      retryConnection: {
+        maxRetries: 3,
+        baseDelay: 1000
+      },
+      monitoring: {
+        enableMonitoring: true,
+        logConnections: true
+      }
+    });
+  }
+
+  /**
+   * Create a production connection
+   */
+  static createProductionConnection(
+    uri: string,
+    databaseName: string,
+    options: Partial<ConnectionConfig> = {}
+  ): MongoConnectionManager {
+    return new MongoConnectionManager({
+      uri,
+      databaseName,
+      options: {
+        serverSelectionTimeoutMS: 30000,
+        connectTimeoutMS: 30000,
+        socketTimeoutMS: 45000,
+        heartbeatFrequencyMS: 10000,
+        retryReads: true,
+        retryWrites: true,
+        readPreference: 'primaryPreferred',
+        ...options.options
+      },
+      pooling: {
+        minPoolSize: 10,
+        maxPoolSize: 100,
+        maxIdleTimeMS: 60000,
+        waitQueueTimeoutMS: 5000,
+        maxConnecting: 5,
+        ...options.pooling
+      },
+      retryConnection: {
+        maxRetries: 10,
+        baseDelay: 2000,
+        maxDelay: 60000,
+        backoffMultiplier: 1.5,
+        jitter: true,
+        ...options.retryConnection
+      },
+      monitoring: {
+        enableMonitoring: true,
+        logConnections: false, // Reduce noise in production
+        ...options.monitoring
+      }
+    });
+  }
+
+  /**
+   * Create a cluster connection for replica sets
+   */
+  static createClusterConnection(
+    hosts: string[],
+    databaseName: string,
+    credentials?: { username: string; password: string },
+    options: Partial<ConnectionConfig> = {}
+  ): MongoConnectionManager {
+    const hostsString = hosts.join(',');
+    const authString = credentials 
+      ? `${credentials.username}:${credentials.password}@`
+      : '';
+    
+    const uri = `mongodb://${authString}${hostsString}/${databaseName}?replicaSet=rs0`;
+
+    return new MongoConnectionManager({
+      uri,
+      databaseName,
+      options: {
+        readPreference: 'secondaryPreferred',
+        maxPoolSize: 50,
+        serverSelectionTimeoutMS: 30000,
+        ...options.options
+      },
+      retryConnection: {
+        maxRetries: 15,
+        baseDelay: 1000,
+        maxDelay: 30000,
+        ...options.retryConnection
+      },
+      monitoring: {
+        enableMonitoring: true,
+        onError: async (error) => {
+          console.error('🚨 Cluster connection error:', error);
+        },
+        onReconnect: async () => {
+          console.log('🔄 Cluster reconnected successfully');
+        },
+        ...options.monitoring
+      }
+    });
+  }
+
+  /**
+   * Create an Atlas connection (MongoDB Cloud)
+   */
+  static createAtlasConnection(
+    clusterUrl: string,
+    username: string,
+    password: string,
+    databaseName: string,
+    options: Partial<ConnectionConfig> = {}
+  ): MongoConnectionManager {
+    const uri = `mongodb+srv://${username}:${password}@${clusterUrl}/${databaseName}?retryWrites=true&w=majority`;
+
+    return new MongoConnectionManager({
+      uri,
+      databaseName,
+      options: {
+        serverSelectionTimeoutMS: 30000,
+        connectTimeoutMS: 30000,
+        tls: true,
+        authMechanism: 'SCRAM-SHA-1',
+        ...options.options
+      },
+      retryConnection: {
+        maxRetries: 10,
+        baseDelay: 2000,
+        maxDelay: 60000,
+        ...options.retryConnection
+      },
+      monitoring: {
+        enableMonitoring: true,
+        onConnect: async () => {
+          console.log('☁️ Connected to MongoDB Atlas');
+        },
+        ...options.monitoring
+      }
+    });
+  }
+}
