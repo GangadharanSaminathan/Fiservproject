@@ -1,0 +1,462 @@
+Here's a complete TypeScript MongoDB client setup for handling bulk operations with proper typing:1. MongoDB Client Setup with TypeScriptimport { MongoClient, MongoClientOptions, Db, Collection, BulkWriteResult, AnyBulkWriteOperation } from 'mongodb';
+
+interface MongoConfig {
+  connectionString: string;
+  databaseName: string;
+  options?: MongoClientOptions;
+}
+
+interface RetryOptions {
+  maxRetries: number;
+  baseDelayMs: number;
+  exponentialBackoff: boolean;
+}
+
+class MongoDBClient {
+  private client: MongoClient;
+  private db: Db;
+  private isConnected: boolean = false;
+
+  constructor(private config: MongoConfig) {
+    const defaultOptions: MongoClientOptions = {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+      bufferMaxEntries: 0,
+      retryWrites: true,
+      retryReads: true,
+      ...config.options
+    };
+
+    this.client = new MongoClient(config.connectionString, defaultOptions);
+    this.db = this.client.db(config.databaseName);
+  }
+
+  async connect(): Promise<void> {
+    try {
+      await this.client.connect();
+      this.isConnected = true;
+      console.log('Connected to MongoDB');
+    } catch (error) {
+      console.error('Failed to connect to MongoDB:', error);
+      throw error;
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    try {
+      await this.client.close();
+      this.isConnected = false;
+      console.log('Disconnected from MongoDB');
+    } catch (error) {
+      console.error('Error disconnecting from MongoDB:', error);
+    }
+  }
+
+  getCollection<T = any>(name: string): Collection<T> {
+    if (!this.isConnected) {
+      throw new Error('Database not connected. Call connect() first.');
+    }
+    return this.db.collection<T>(name);
+  }
+
+  isDBConnected(): boolean {
+    return this.isConnected;
+  }
+}2. Bulk Operations Handler with Rate Limitinginterface BulkOperationResult<T> {
+  totalProcessed: number;
+  successful: number;
+  failed: number;
+  insertedCount: number;
+  modifiedCount: number;
+  upsertedCount: number;
+  errors: Array<{
+    index: number;
+    error: any;
+    document: T;
+  }>;
+}
+
+interface BulkInsertOptions {
+  chunkSize: number;
+  delayBetweenChunks: number;
+  ordered: boolean;
+  retryOptions: RetryOptions;
+  onProgress?: (processed: number, total: number) => void;
+}
+
+class BulkOperationsHandler {
+  private static readonly DEFAULT_OPTIONS: BulkInsertOptions = {
+    chunkSize: 100,
+    delayBetweenChunks: 100,
+    ordered: false,
+    retryOptions: {
+      maxRetries: 3,
+      baseDelayMs: 1000,
+      exponentialBackoff: true
+    }
+  };
+
+  static async bulkUpsert<T extends { _id?: any }>(
+    collection: Collection<T>,
+    documents: T[],
+    options: Partial<BulkInsertOptions> = {}
+  ): Promise<BulkOperationResult<T>> {
+    const config = { ...this.DEFAULT_OPTIONS, ...options };
+    const chunks = this.chunkArray(documents, config.chunkSize);
+    
+    let totalInserted = 0;
+    let totalModified = 0;
+    let totalUpserted = 0;
+    let totalProcessed = 0;
+    const allErrors: Array<{ index: number; error: any; document: T }> = [];
+
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+      const chunk = chunks[chunkIndex];
+      
+      try {
+        const operations: AnyBulkWriteOperation<T>[] = chunk.map((doc, index) => ({
+          updateOne: {
+            filter: { _id: doc._id } as any,
+            update: { $set: doc } as any,
+            upsert: true
+          }
+        }));
+
+        const result = await this.executeWithRetry(
+          () => collection.bulkWrite(operations, { ordered: config.ordered }),
+          config.retryOptions
+        );
+
+        totalInserted += result.insertedCount;
+        totalModified += result.modifiedCount;
+        totalUpserted += result.upsertedCount;
+        totalProcessed += chunk.length;
+
+        // Handle individual errors within the batch
+        if (result.writeErrors && result.writeErrors.length > 0) {
+          result.writeErrors.forEach(error => {
+            const docIndex = (chunkIndex * config.chunkSize) + error.index;
+            allErrors.push({
+              index: docIndex,
+              error: error.errmsg,
+              document: documents[docIndex]
+            });
+          });
+        }
+
+        console.log(`Processed chunk ${chunkIndex + 1}/${chunks.length} - ${chunk.length} documents`);
+        
+        // Progress callback
+        if (config.onProgress) {
+          config.onProgress(totalProcessed, documents.length);
+        }
+
+        // Delay between chunks
+        if (chunkIndex < chunks.length - 1 && config.delayBetweenChunks > 0) {
+          await this.sleep(config.delayBetweenChunks);
+        }
+
+      } catch (error) {
+        console.error(`Failed to process chunk ${chunkIndex + 1}:`, error);
+        
+        // Add all documents in failed chunk to errors
+        chunk.forEach((doc, index) => {
+          const docIndex = (chunkIndex * config.chunkSize) + index;
+          allErrors.push({
+            index: docIndex,
+            error: error,
+            document: doc
+          });
+        });
+        
+        totalProcessed += chunk.length;
+      }
+    }
+
+    return {
+      totalProcessed,
+      successful: totalProcessed - allErrors.length,
+      failed: allErrors.length,
+      insertedCount: totalInserted,
+      modifiedCount: totalModified,
+      upsertedCount: totalUpserted,
+      errors: allErrors
+    };
+  }
+
+  static async bulkInsert<T>(
+    collection: Collection<T>,
+    documents: T[],
+    options: Partial<BulkInsertOptions> = {}
+  ): Promise<BulkOperationResult<T>> {
+    const config = { ...this.DEFAULT_OPTIONS, ...options };
+    const chunks = this.chunkArray(documents, config.chunkSize);
+    
+    let totalInserted = 0;
+    let totalProcessed = 0;
+    const allErrors: Array<{ index: number; error: any; document: T }> = [];
+
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+      const chunk = chunks[chunkIndex];
+      
+      try {
+        const result = await this.executeWithRetry(
+          () => collection.insertMany(chunk, { ordered: config.ordered }),
+          config.retryOptions
+        );
+
+        totalInserted += result.insertedCount;
+        totalProcessed += chunk.length;
+
+        console.log(`Inserted chunk ${chunkIndex + 1}/${chunks.length} - ${chunk.length} documents`);
+        
+        if (config.onProgress) {
+          config.onProgress(totalProcessed, documents.length);
+        }
+
+        if (chunkIndex < chunks.length - 1 && config.delayBetweenChunks > 0) {
+          await this.sleep(config.delayBetweenChunks);
+        }
+
+      } catch (error: any) {
+        // Handle duplicate key errors (code 11000)
+        if (error.code === 11000 && error.result) {
+          totalInserted += error.result.nInserted;
+          totalProcessed += chunk.length;
+
+          // Log successful inserts and duplicates
+          console.log(`Chunk ${chunkIndex + 1}: ${error.result.nInserted} inserted, ${error.writeErrors?.length || 0} duplicates`);
+          
+          // Add duplicates to errors if needed
+          if (error.writeErrors) {
+            error.writeErrors.forEach((writeError: any) => {
+              const docIndex = (chunkIndex * config.chunkSize) + writeError.index;
+              allErrors.push({
+                index: docIndex,
+                error: 'Duplicate key',
+                document: chunk[writeError.index]
+              });
+            });
+          }
+        } else {
+          console.error(`Failed to insert chunk ${chunkIndex + 1}:`, error);
+          
+          chunk.forEach((doc, index) => {
+            const docIndex = (chunkIndex * config.chunkSize) + index;
+            allErrors.push({
+              index: docIndex,
+              error: error.message || error,
+              document: doc
+            });
+          });
+          
+          totalProcessed += chunk.length;
+        }
+      }
+    }
+
+    return {
+      totalProcessed,
+      successful: totalInserted,
+      failed: totalProcessed - totalInserted,
+      insertedCount: totalInserted,
+      modifiedCount: 0,
+      upsertedCount: 0,
+      errors: allErrors
+    };
+  }
+
+  private static async executeWithRetry<T>(
+    operation: () => Promise<T>,
+    retryOptions: RetryOptions
+  ): Promise<T> {
+    let lastError: any;
+    
+    for (let attempt = 0; attempt <= retryOptions.maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error: any) {
+        lastError = error;
+        
+        // Check if it's a retryable error (rate limiting, timeout, etc.)
+        if (!this.isRetryableError(error) || attempt === retryOptions.maxRetries) {
+          throw error;
+        }
+
+        const delay = retryOptions.exponentialBackoff
+          ? Math.pow(2, attempt) * retryOptions.baseDelayMs
+          : retryOptions.baseDelayMs;
+
+        console.log(`Attempt ${attempt + 1} failed. Retrying in ${delay}ms...`);
+        await this.sleep(delay);
+      }
+    }
+    
+    throw lastError;
+  }
+
+  private static isRetryableError(error: any): boolean {
+    // MongoDB retryable error codes
+    const retryableCodes = [
+      16500, // Cosmos DB rate limiting
+      11600, // InterruptedAtShutdown
+      11601, // Interrupted
+      11602, // InterruptedDueToReplStateChange
+      50,    // ExceededTimeLimit
+      7,     // HostNotFound
+      6,     // HostUnreachable
+      89,    // NetworkTimeout
+    ];
+    
+    return retryableCodes.includes(error.code) || 
+           error.message?.includes('rate') ||
+           error.message?.includes('timeout');
+  }
+
+  private static chunkArray<T>(array: T[], chunkSize: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < array.length; i += chunkSize) {
+      chunks.push(array.slice(i, i + chunkSize));
+    }
+    return chunks;
+  }
+
+  private static sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}3. Document Type Definitions// Define your document interfaces
+interface User {
+  _id?: string;
+  name: string;
+  email: string;
+  age: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface Product {
+  _id?: string;
+  name: string;
+  price: number;
+  category: string;
+  inStock: boolean;
+}4. Usage Examplesasync function main() {
+  // Initialize MongoDB client
+  const mongoClient = new MongoDBClient({
+    connectionString: 'your-mongodb-connection-string',
+    databaseName: 'your-database',
+    options: {
+      maxPoolSize: 20,
+      serverSelectionTimeoutMS: 10000
+    }
+  });
+
+  try {
+    // Connect to database
+    await mongoClient.connect();
+
+    // Get typed collection
+    const usersCollection = mongoClient.getCollection<User>('users');
+
+    // Sample documents
+    const users: User[] = [
+      {
+        _id: '1',
+        name: 'John Doe',
+        email: 'john@example.com',
+        age: 30,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      },
+      // ... more users
+    ];
+
+    // Bulk upsert with progress tracking
+    const result = await BulkOperationsHandler.bulkUpsert(
+      usersCollection,
+      users,
+      {
+        chunkSize: 50,
+        delayBetweenChunks: 200,
+        retryOptions: {
+          maxRetries: 5,
+          baseDelayMs: 1000,
+          exponentialBackoff: true
+        },
+        onProgress: (processed, total) => {
+          console.log(`Progress: ${processed}/${total} (${Math.round(processed/total*100)}%)`);
+        }
+      }
+    );
+
+    console.log('Bulk operation results:', {
+      totalProcessed: result.totalProcessed,
+      successful: result.successful,
+      failed: result.failed,
+      insertedCount: result.insertedCount,
+      modifiedCount: result.modifiedCount,
+      upsertedCount: result.upsertedCount,
+      errorCount: result.errors.length
+    });
+
+    // Handle errors if any
+    if (result.errors.length > 0) {
+      console.log('Errors occurred:');
+      result.errors.forEach((error, index) => {
+        console.log(`Error ${index + 1}:`, error.error);
+      });
+    }
+
+  } catch (error) {
+    console.error('Operation failed:', error);
+  } finally {
+    await mongoClient.disconnect();
+  }
+}
+
+// Run the application
+main().catch(console.error);5. Advanced Usage with Custom Operations// Custom bulk operations
+async function customBulkOperations() {
+  const mongoClient = new MongoDBClient({
+    connectionString: process.env.MONGODB_URI!,
+    databaseName: 'myapp'
+  });
+
+  await mongoClient.connect();
+  const collection = mongoClient.getCollection<Product>('products');
+
+  // Mixed operations
+  const operations: AnyBulkWriteOperation<Product>[] = [
+    {
+      insertOne: {
+        document: {
+          name: 'New Product',
+          price: 99.99,
+          category: 'Electronics',
+          inStock: true
+        }
+      }
+    },
+    {
+      updateOne: {
+        filter: { _id: 'existing-id' },
+        update: { $set: { price: 89.99 } }
+      }
+    },
+    {
+      deleteOne: {
+        filter: { _id: 'old-product-id' }
+      }
+    }
+  ];
+
+  try {
+    const result = await collection.bulkWrite(operations, { ordered: false });
+    console.log('Custom bulk operation result:', result);
+  } catch (error) {
+    console.error('Custom bulk operation failed:', error);
+  }
+
+  await mongoClient.disconnect();
+}This TypeScript implementation provides:Type Safety: Full TypeScript typing for all operationsError Handling: Comprehensive error handling with retry logicRate Limiting: Built-in handling for Cosmos DB rate limitingProgress Tracking: Optional progress callbacksFlexible Configuration: Customizable options for different scenariosConnection Management: Proper connection lifecycle managementThe code handles both regular MongoDB and Cosmos DB MongoDB API scenarios with appropriate retry strategies.
